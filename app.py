@@ -127,35 +127,34 @@ def generate_report(patient_name: str, sessions: list) -> str:
             f"Threshold Min: {t.get('threshold_min','?')} | Threshold Max: {t.get('threshold_max','?')}"
         )
 
-    prompt = f"""You are a senior clinical neuropsychologist writing a concise HEG neurofeedback progress report for a physician.
+    prompt = f"""You are a clinical neuropsychologist writing a VERY CONCISE HEG neurofeedback report for a physician. The report must fit on half an A4 page.
 
-Patient: {patient_name}
-Total Sessions: {len(sessions)}
+Patient: {patient_name}  |  Sessions: {len(sessions)}
 
-Session Data:
+Data:
 {chr(10).join(lines)}
 
-Write a clinical report with EXACTLY these 5 sections. Each section is ONE tight paragraph (3-4 sentences). Cite specific numbers. No bullet points. No markdown formatting.
+Write EXACTLY these 5 sections. Each section: MAX 2 sentences. Cite numbers. No bullets. No markdown.
 
 SESSION OVERVIEW
-Summarise the training block: number of sessions, date range, average duration, general trajectory.
+[2 sentences: sessions count, date range, average duration]
 
 METRICS ANALYSIS
-Analyse trends in Mean HEG, %Correct, Points, and Difficulty. Compare first vs last session numbers. Note Threshold Min and Max evolution — did the challenge level rise across sessions?
+[2 sentences: Mean HEG first vs last, %Correct trend, Threshold Min/Max evolution, Points]
 
 CORTICAL ACTIVATION
-Interpret what the combined data reveals about prefrontal cortex activation quality, self-regulation capacity, and session-to-session consistency.
+[2 sentences: PFC activation quality and self-regulation consistency interpretation]
 
 PROGRESS & RECOMMENDATIONS
-State clearly whether the patient is progressing, plateauing, or inconsistent — with data to support it. Give 2 specific recommendations for the next training block (threshold, session length, or protocol adjustments).
+[2 sentences: progress verdict + 2 specific recommendations]
 
 PHYSICIAN SUMMARY
-Two sentences only. Plain language. Suitable for medical file. Include overall progress verdict and one key recommendation."""
+[1 sentence only: overall verdict and key next step]"""
 
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=1000,
+        max_tokens=500,
         temperature=0.3,
     )
     return response.choices[0].message.content.strip()
@@ -178,73 +177,85 @@ def build_pdf(patient_name: str, sessions: list, report_text: str) -> BytesIO:
 
     def S(n, **k): return ParagraphStyle(n, **k)
 
-    TITLE  = S("T",  fontName="Helvetica-Bold",   fontSize=13, textColor=WHITE,  leading=17, alignment=TA_CENTER)
-    TSUB   = S("TS", fontName="Helvetica",         fontSize=8,  textColor=HexColor("#A8C8E8"), leading=10, alignment=TA_CENTER)
-    META_B = S("MB", fontName="Helvetica-Bold",    fontSize=8,  textColor=STEEL,  leading=10)
-    META   = S("M",  fontName="Helvetica",         fontSize=8,  textColor=TEXT_M, leading=10)
-    SH     = S("SH", fontName="Helvetica-Bold",    fontSize=8.5,textColor=STEEL,  leading=11, spaceBefore=4, spaceAfter=2)
-    TH     = S("TH", fontName="Helvetica-Bold",    fontSize=6.5,textColor=STEEL,  leading=8,  alignment=TA_CENTER)
-    TD     = S("TD", fontName="Helvetica",         fontSize=6.5,textColor=TEXT,   leading=8,  alignment=TA_CENTER)
-    BODY   = S("B",  fontName="Helvetica",         fontSize=8,  textColor=TEXT,   leading=11.5, spaceAfter=3, alignment=TA_JUSTIFY)
-    BODY_B = S("BB", fontName="Helvetica-Bold",    fontSize=8,  textColor=STEEL,  leading=10, spaceAfter=1)
-    FOOT   = S("F",  fontName="Helvetica-Oblique", fontSize=6.5,textColor=TEXT_L, alignment=TA_CENTER)
+    TITLE  = S("T",  fontName="Helvetica-Bold",   fontSize=12, textColor=WHITE,  leading=15, alignment=TA_CENTER)
+    TSUB   = S("TS", fontName="Helvetica",         fontSize=7.5,textColor=HexColor("#A8C8E8"), leading=9, alignment=TA_CENTER)
+    META_B = S("MB", fontName="Helvetica-Bold",    fontSize=7.5,textColor=STEEL,  leading=9)
+    META   = S("M",  fontName="Helvetica",         fontSize=7.5,textColor=TEXT_M, leading=9)
+    SH     = S("SH", fontName="Helvetica-Bold",    fontSize=8,  textColor=STEEL,  leading=10, spaceBefore=3, spaceAfter=2)
+    TH     = S("TH", fontName="Helvetica-Bold",    fontSize=6,  textColor=STEEL,  leading=7,  alignment=TA_CENTER)
+    TD     = S("TD", fontName="Helvetica",         fontSize=6,  textColor=TEXT,   leading=7,  alignment=TA_CENTER)
+    BODY   = S("B",  fontName="Helvetica",         fontSize=7.5,textColor=TEXT,   leading=10, alignment=TA_JUSTIFY)
+    FOOT   = S("F",  fontName="Helvetica-Oblique", fontSize=6,  textColor=TEXT_L, alignment=TA_CENTER)
+
+    # ── Precise page geometry ──────────────────────────────────────────────────
+    # Usable height = 29.7 - 2.6 = 27.1 cm
+    # Fixed elements (measured in cm):
+    #   banner=1.1, spacer=0.14, meta=0.7, spacer=0.18
+    #   sh_data=0.45, rule=0.15, spacer_mid=0.2
+    #   sh_interp=0.45, rule=0.15, spacer2=0.1
+    #   footer_spacer=0.1, rule=0.1, footer=0.2
+    # Total fixed ≈ 4.03 cm
+    # Remaining for table + interp = 27.1 - 4.03 = 23.07 cm
+    # Split: table = 11.5 cm, interp = 11.57 cm
+
+    W_page, H_page = A4
+    LM = RM = 1.4*cm
+    TM = BM = 1.3*cm
+    W = W_page - LM - RM
+
+    TABLE_H  = 11.5*cm   # exact height budget for the session table
+    INTERP_H = 11.2*cm   # exact height budget for interpretation (5 sections)
+    SEC_H    = INTERP_H / 5   # each section gets equal fixed height
 
     buf = BytesIO()
-    W_page, H_page = A4
-    LM = RM = 1.5*cm
-    TM = BM = 1.3*cm
-    W = W_page - LM - RM   # content width
-
     doc = SimpleDocTemplate(buf, pagesize=A4,
                             leftMargin=LM, rightMargin=RM,
                             topMargin=TM,  bottomMargin=BM)
     story = []
 
-    # ── Banner (compact) ──
+    # ── Banner ──
     banner = Table([
         [Paragraph("nIR HEG NEUROFEEDBACK — Clinical Progress Report", TITLE)],
         [Paragraph("Dr. Hany Elhennawy Psychiatric Center", TSUB)],
-    ], colWidths=[W])
+    ], colWidths=[W], rowHeights=[0.65*cm, 0.45*cm])
     banner.setStyle(TableStyle([
         ("BACKGROUND",    (0,0),(-1,-1), NAVY),
-        ("TOPPADDING",    (0,0),(-1,-1), 7),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 7),
+        ("TOPPADDING",    (0,0),(-1,-1), 5),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 5),
         ("LEFTPADDING",   (0,0),(-1,-1), 12),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
     ]))
     story.append(banner)
     story.append(Spacer(1, 4))
 
-    # ── Meta strip ──
-    mc = [1.6*cm, 4.5*cm, 1.8*cm, 1.8*cm, 2.2*cm, W - 11.9*cm]
+    # ── Meta ──
+    mc = [1.5*cm, 4.2*cm, 1.7*cm, 1.5*cm, 2.0*cm, W-10.9*cm]
     meta_tbl = Table([[
         Paragraph("Patient:", META_B), Paragraph(patient_name, META),
         Paragraph("Sessions:", META_B), Paragraph(str(len(sessions)), META),
-        Paragraph("Report Date:", META_B), Paragraph(datetime.now().strftime("%d.%m.%Y"), META),
-    ]], colWidths=mc)
+        Paragraph("Date:", META_B), Paragraph(datetime.now().strftime("%d.%m.%Y"), META),
+    ]], colWidths=mc, rowHeights=[0.55*cm])
     meta_tbl.setStyle(TableStyle([
         ("BACKGROUND",    (0,0),(-1,-1), ICE),
         ("BOX",           (0,0),(-1,-1), 0.5, SILVER),
-        ("TOPPADDING",    (0,0),(-1,-1), 5),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 5),
-        ("LEFTPADDING",   (0,0),(-1,-1), 8),
+        ("TOPPADDING",    (0,0),(-1,-1), 4),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 4),
+        ("LEFTPADDING",   (0,0),(-1,-1), 7),
         ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
     ]))
     story.append(meta_tbl)
     story.append(Spacer(1, 5))
 
     # ════════════════════════════════════
-    # TOP HALF — Session data table
+    # TOP HALF — fixed-height session table
     # ════════════════════════════════════
     story.append(Paragraph("Session Data", SH))
-    story.append(HRFlowable(width="100%", thickness=0.8, color=STEEL, spaceAfter=3))
+    story.append(HRFlowable(width="100%", thickness=0.7, color=STEEL, spaceAfter=3))
 
-    # Columns: # | Date | Dur | Mean | Max | Min | Range | %Corr | ThMin | ThMax | Diff | Pts
-    hdr_labels = ["#","Date","Duration","Mean","Max","Min","Range","%Correct","Thresh\nMin","Thresh\nMax","Difficulty","Points"]
-    n_cols = len(hdr_labels)
-    # fixed widths (cm) — sum must = W
-    sw_cm = [0.55, 1.8, 1.7, 1.2, 1.2, 1.2, 1.2, 1.4, 1.4, 1.4, 1.6, 1.35]
+    hdr_labels = ["#","Date","Dur.","Mean","Max","Min","Range","%Corr","Thr\nMin","Thr\nMax","Diff","Pts"]
+    sw_cm = [0.5, 1.75, 1.65, 1.15, 1.15, 1.15, 1.15, 1.3, 1.3, 1.3, 1.5, 1.3]
     sw = [x*cm for x in sw_cm]
-    sw[-1] = W - sum(sw[:-1])   # adjust last col to fill exactly
+    sw[-1] = W - sum(sw[:-1])
 
     hdr_row = [Paragraph(t, TH) for t in hdr_labels]
     s_rows = [hdr_row]
@@ -262,38 +273,34 @@ def build_pdf(patient_name: str, sessions: list, report_text: str) -> BytesIO:
             t.get("difficulty","—"), t.get("points","—"),
         ]])
 
-    # Dynamic row height: aim for table to occupy ~half the page
-    # Page usable H ≈ 29.7 - 2.6 = 27.1cm
-    # Banner+meta+spacers ≈ 3.5cm, section head ≈ 0.6cm, divider line ≈ 0.3cm → overhead top ≈ 4.4cm
-    # Footer ≈ 0.6cm, interp section head + divider ≈ 0.6cm, 5 interp blocks ≈ 9cm → bottom half ≈ 10.2cm
-    # Table gets: 27.1 - 4.4 - 10.2 = 12.5cm target
-    # Header row ~0.9cm, data rows: (12.5 - 0.9) / n_sessions
-    n_sessions = len(sessions) if sessions else 1
-    data_row_h = max(0.65*cm, min(1.1*cm, (12.5*cm - 0.9*cm) / n_sessions))
+    # Fixed row heights: header 0.75cm, data rows fill rest of TABLE_H
+    n_sessions = max(len(sessions), 1)
+    HDR_ROW_H  = 0.75*cm
+    DATA_ROW_H = (TABLE_H - HDR_ROW_H) / n_sessions
 
     s_tbl = Table(s_rows, colWidths=sw, repeatRows=1,
-                  rowHeights=[None] + [data_row_h]*len(sessions))
+                  rowHeights=[HDR_ROW_H] + [DATA_ROW_H]*len(sessions))
     alt = [("BACKGROUND", (0,r),(-1,r), fills[r%2]) for r in range(1, len(s_rows))]
     s_tbl.setStyle(TableStyle([
         ("BACKGROUND",    (0,0),(-1,0), NAVY),
         ("TEXTCOLOR",     (0,0),(-1,0), WHITE),
         *alt,
-        ("BOX",           (0,0),(-1,-1), 0.7, STEEL_L),
+        ("BOX",           (0,0),(-1,-1), 0.6, STEEL_L),
         ("INNERGRID",     (0,0),(-1,-1), 0.25, SILVER),
-        ("TOPPADDING",    (0,0),(-1,-1), 3),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 3),
+        ("TOPPADDING",    (0,0),(-1,-1), 2),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 2),
         ("LEFTPADDING",   (0,0),(-1,-1), 3),
         ("RIGHTPADDING",  (0,0),(-1,-1), 2),
         ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
     ]))
     story.append(s_tbl)
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 5))
 
     # ════════════════════════════════════
-    # BOTTOM HALF — Clinical interpretation
+    # BOTTOM HALF — fixed-height sections
     # ════════════════════════════════════
     story.append(Paragraph("Clinical Interpretation", SH))
-    story.append(HRFlowable(width="100%", thickness=0.8, color=STEEL, spaceAfter=4))
+    story.append(HRFlowable(width="100%", thickness=0.7, color=STEEL, spaceAfter=3))
 
     sections = [
         ("SESSION OVERVIEW",           ICE2,   False),
@@ -303,41 +310,47 @@ def build_pdf(patient_name: str, sessions: list, report_text: str) -> BytesIO:
         ("PHYSICIAN SUMMARY",          TEAL_L, True),
     ]
 
+    # Label row height + body row height = SEC_H per section
+    LBL_H  = 0.38*cm
+    BODY_H = SEC_H - LBL_H - 0.04*cm  # tiny gap buffer
+
     remaining = report_text
     for title, fill, is_summary in sections:
         if title not in remaining:
-            continue
-        parts = remaining.split(title, 1)
-        remaining = parts[1] if len(parts) > 1 else ""
-        next_start = len(remaining)
-        for other, _, _ in sections:
-            if other != title and other in remaining:
-                idx = remaining.index(other)
-                if idx < next_start:
-                    next_start = idx
-        body = remaining[:next_start].strip()
-        remaining = remaining[next_start:]
+            body_text = ""
+        else:
+            parts = remaining.split(title, 1)
+            remaining = parts[1] if len(parts) > 1 else ""
+            next_start = len(remaining)
+            for other, _, _ in sections:
+                if other != title and other in remaining:
+                    idx = remaining.index(other)
+                    if idx < next_start:
+                        next_start = idx
+            body_text = remaining[:next_start].strip()
+            remaining = remaining[next_start:]
 
-        label = "🩺 Physician Summary" if is_summary else title.title()
-        label_color = TEAL if is_summary else STEEL
+        label     = "Physician Summary" if is_summary else title.title()
+        lbl_color = TEAL if is_summary else STEEL
+        lbl_fill  = TEAL_L if is_summary else HexColor("#DDEEF9")
 
         sec = Table([
-            [Paragraph(label, S("sl", fontName="Helvetica-Bold", fontSize=7.5,
-                                textColor=label_color, leading=10))],
-            [Paragraph(body, BODY)],
-        ], colWidths=[W])
+            [Paragraph(label, S("sl", fontName="Helvetica-Bold", fontSize=7,
+                                textColor=lbl_color, leading=9))],
+            [Paragraph(body_text, BODY)],
+        ], colWidths=[W], rowHeights=[LBL_H, BODY_H])
         sec.setStyle(TableStyle([
             ("BACKGROUND",    (0,0),(-1,-1), fill),
-            ("BACKGROUND",    (0,0),(-1,0),  HexColor("#DDEEF9") if not is_summary else TEAL_L),
-            ("BOX",           (0,0),(-1,-1), 0.5, SILVER),
-            ("LINEBELOW",     (0,0),(-1,0),  0.4, SILVER),
-            ("TOPPADDING",    (0,0),(-1,-1), 4),
-            ("BOTTOMPADDING", (0,0),(-1,-1), 4),
-            ("LEFTPADDING",   (0,0),(-1,-1), 7),
-            ("RIGHTPADDING",  (0,0),(-1,-1), 7),
+            ("BACKGROUND",    (0,0),(0,0),   lbl_fill),
+            ("BOX",           (0,0),(-1,-1), 0.4, SILVER),
+            ("LINEBELOW",     (0,0),(0,0),   0.3, SILVER),
+            ("TOPPADDING",    (0,0),(-1,-1), 3),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 3),
+            ("LEFTPADDING",   (0,0),(-1,-1), 6),
+            ("RIGHTPADDING",  (0,0),(-1,-1), 6),
+            ("VALIGN",        (0,0),(-1,-1), "TOP"),
         ]))
         story.append(sec)
-        story.append(Spacer(1, 2))
 
     # ── Footer ──
     story.append(Spacer(1, 3))
