@@ -129,16 +129,16 @@ def generate_report(patient_name: str, sessions: list) -> dict:
         )
 
     # Page 1 section — detailed overview for parents (plain language)
-    prompt_p1 = f"""You are writing a neurofeedback session summary for a PARENT. Use plain, warm, non-technical language. Be encouraging but honest.
+    prompt_p1 = f"""You are writing a neurofeedback session summary for a PARENT. Use plain, simple, non-technical language.
 
 Patient: {patient_name} | Sessions: {len(sessions)}
 Data:
 {chr(10).join(lines)}
 
-Write EXACTLY this section. 3-4 sentences. No bullets. No markdown. No technical jargon.
+Write EXACTLY this section. 4-5 sentences. No bullets. No markdown. No technical jargon.
 
 SESSION OVERVIEW FOR PARENT
-Describe: how many sessions completed, the date range, how long sessions typically lasted, and a simple warm description of the overall direction of progress (e.g. improving, consistent, building well). Make the parent feel informed and involved."""
+State only factual information: how many sessions were completed, the date range, how long each session typically lasted, and the key numbers from the sessions (average Mean HEG, average % Correct, average Points, difficulty level used). Do NOT include any interpretation, judgment, or progress language — no words like "improving", "progress", "enhanced", "better", "showing improvement", "encouraging" or any similar evaluative language. Only describe what happened factually, as if reading from a logbook."""
 
     r1 = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
@@ -362,40 +362,6 @@ def build_pdf(patient_name: str, sessions: list, report: dict) -> BytesIO:
         ("RIGHTPADDING",  (0,0),(-1,-1), 14),
     ]))
     story.append(overview_box)
-    story.append(Spacer(1, 10))
-
-    # ── Quick legend for parents ──
-    legend_items = [
-        ("% Correct", ">75% = Excellent   |   60–75% = Good   |   45–60% = Moderate   |   <45% = Needs review"),
-        ("Points",    "Combined score of success rate and difficulty. Rising over sessions = real progress."),
-        ("Mean HEG",  "Average brain activation level per session. Higher and rising = PFC engagement improving."),
-        ("Threshold", "The target level set for the session. Rising Min/Max = brain being challenged more over time."),
-    ]
-    leg_rows = []
-    for label, desc in legend_items:
-        leg_rows.append(Table([[
-            Paragraph(label, S("ll", fontName="Helvetica-Bold", fontSize=8, textColor=STEEL, leading=10)),
-            Paragraph(desc,  S("ld", fontName="Helvetica",      fontSize=8, textColor=TEXT_M, leading=10)),
-        ]], colWidths=[2.4*cm, W-2.4*cm]))
-    
-    legend_data = [[
-        Paragraph(label, S("ll", fontName="Helvetica-Bold", fontSize=7.5, textColor=STEEL, leading=10)),
-        Paragraph(desc,  S("ld", fontName="Helvetica",      fontSize=7.5, textColor=TEXT_M, leading=10)),
-    ] for label, desc in legend_items]
-    
-    leg_tbl = Table(legend_data, colWidths=[2.5*cm, W-2.5*cm])
-    leg_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0),(-1,-1), ICE2),
-        ("BOX",           (0,0),(-1,-1), 0.5, SILVER),
-        ("INNERGRID",     (0,0),(-1,-1), 0.3, SILVER),
-        ("TOPPADDING",    (0,0),(-1,-1), 5),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 5),
-        ("LEFTPADDING",   (0,0),(-1,-1), 8),
-        ("RIGHTPADDING",  (0,0),(-1,-1), 6),
-        ("VALIGN",        (0,0),(-1,-1), "TOP"),
-    ]))
-    story.append(Paragraph("Quick Reference Guide", S("qr", fontName="Helvetica-Bold", fontSize=8, textColor=TEXT_M, leading=10, spaceAfter=4)))
-    story.append(leg_tbl)
 
     footer_line("Patient / Parent Copy")
 
