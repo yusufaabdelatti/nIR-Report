@@ -7,7 +7,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, KeepTogether
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, PageBreak
 from reportlab.lib.colors import HexColor
 from reportlab.lib import colors
 
@@ -114,7 +114,8 @@ def parse_zip(zip_bytes: bytes) -> list:
     return sessions
 
 # ── Groq report ────────────────────────────────────────────────────────────────
-def generate_report(patient_name: str, sessions: list) -> str:
+def generate_report(patient_name: str, sessions: list) -> dict:
+    """Returns dict with keys: overview, metrics, activation, recommendations, summary"""
     client = get_groq()
     lines = []
     for i, s in enumerate(sessions, 1):
@@ -127,40 +128,63 @@ def generate_report(patient_name: str, sessions: list) -> str:
             f"Threshold Min: {t.get('threshold_min','?')} | Threshold Max: {t.get('threshold_max','?')}"
         )
 
-    prompt = f"""You are a clinical neuropsychologist writing a VERY CONCISE HEG neurofeedback report for a physician. The report must fit on half an A4 page.
+    # Page 1 section — detailed overview for parents (plain language)
+    prompt_p1 = f"""You are writing a neurofeedback session summary for a PARENT. Use plain, warm, non-technical language. Be encouraging but honest.
 
-Patient: {patient_name}  |  Sessions: {len(sessions)}
-
+Patient: {patient_name} | Sessions: {len(sessions)}
 Data:
 {chr(10).join(lines)}
 
-Write EXACTLY these 5 sections. Each section: MAX 2 sentences. Cite numbers. No bullets. No markdown.
+Write EXACTLY this section. 3-4 sentences. No bullets. No markdown. No technical jargon.
 
-SESSION OVERVIEW
-[2 sentences: sessions count, date range, average duration]
+SESSION OVERVIEW FOR PARENT
+Describe: how many sessions completed, the date range, how long sessions typically lasted, and a simple warm description of the overall direction of progress (e.g. improving, consistent, building well). Make the parent feel informed and involved."""
+
+    r1 = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt_p1}],
+        max_tokens=300, temperature=0.4,
+    )
+    overview_text = r1.choices[0].message.content.strip()
+    # Clean section header if model included it
+    overview_text = re.sub(r'^SESSION OVERVIEW FOR PARENT\s*\n?', '', overview_text, flags=re.IGNORECASE).strip()
+
+    # Page 2 sections — clinical interpretation for staff
+    prompt_p2 = f"""You are a senior clinical neuropsychologist writing a HEG neurofeedback progress report for clinic staff (therapists and doctors). Be precise, cite numbers, use clinical language.
+
+Patient: {patient_name} | Sessions: {len(sessions)}
+Data:
+{chr(10).join(lines)}
+
+Write EXACTLY these 4 sections. Each section: 2-3 sentences. Cite specific numbers. No bullets. No markdown.
 
 METRICS ANALYSIS
-[2 sentences: Mean HEG first vs last, %Correct trend, Threshold Min/Max evolution, Points]
+Analyse trends in Mean HEG (first vs last), %Correct, Points, Threshold Min/Max evolution across sessions.
 
 CORTICAL ACTIVATION
-[2 sentences: PFC activation quality and self-regulation consistency interpretation]
+Interpret PFC activation quality, self-regulation consistency, and what the range and threshold trends reveal neurologically.
 
 PROGRESS & RECOMMENDATIONS
-[2 sentences: progress verdict + 2 specific recommendations]
+Clear verdict on progress (improving/plateau/inconsistent) with supporting data. Give 2 specific clinical recommendations for the next block.
 
 PHYSICIAN SUMMARY
-[1 sentence only: overall verdict and key next step]"""
+2 sentences maximum. Suitable for attaching to a medical file. Include overall verdict and one key clinical next step."""
 
-    response = client.chat.completions.create(
+    r2 = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=500,
-        temperature=0.3,
+        messages=[{"role": "user", "content": prompt_p2}],
+        max_tokens=600, temperature=0.3,
     )
-    return response.choices[0].message.content.strip()
+    clinical_text = r2.choices[0].message.content.strip()
 
-# ── PDF builder — 1 page, half table / half interpretation ────────────────────
-def build_pdf(patient_name: str, sessions: list, report_text: str) -> BytesIO:
+    return {
+        "overview":  overview_text,
+        "clinical":  clinical_text,
+        "raw_combined": overview_text + "\n\n" + clinical_text
+    }
+
+# ── PDF builder — 2 pages ─────────────────────────────────────────────────────
+def build_pdf(patient_name: str, sessions: list, report: dict) -> BytesIO:
     STEEL  = HexColor("#4A6FA5")
     ICE    = HexColor("#EAF1FB")
     ICE2   = HexColor("#F4F8FE")
@@ -173,39 +197,30 @@ def build_pdf(patient_name: str, sessions: list, report_text: str) -> BytesIO:
     TEXT_M = HexColor("#5A6880")
     TEXT_L = HexColor("#8A96A8")
     STEEL_L= HexColor("#6B8FC2")
+    GREEN_L= HexColor("#E8F8F0")
     WHITE  = colors.white
 
     def S(n, **k): return ParagraphStyle(n, **k)
 
-    TITLE  = S("T",  fontName="Helvetica-Bold",   fontSize=12, textColor=WHITE,  leading=15, alignment=TA_CENTER)
-    TSUB   = S("TS", fontName="Helvetica",         fontSize=7.5,textColor=HexColor("#A8C8E8"), leading=9, alignment=TA_CENTER)
-    META_B = S("MB", fontName="Helvetica-Bold",    fontSize=7.5,textColor=STEEL,  leading=9)
-    META   = S("M",  fontName="Helvetica",         fontSize=7.5,textColor=TEXT_M, leading=9)
-    SH     = S("SH", fontName="Helvetica-Bold",    fontSize=8,  textColor=STEEL,  leading=10, spaceBefore=3, spaceAfter=2)
-    TH     = S("TH", fontName="Helvetica-Bold",    fontSize=6,  textColor=STEEL,  leading=7,  alignment=TA_CENTER)
-    TD     = S("TD", fontName="Helvetica",         fontSize=6,  textColor=TEXT,   leading=7,  alignment=TA_CENTER)
-    BODY   = S("B",  fontName="Helvetica",         fontSize=7.5,textColor=TEXT,   leading=10, alignment=TA_JUSTIFY)
-    FOOT   = S("F",  fontName="Helvetica-Oblique", fontSize=6,  textColor=TEXT_L, alignment=TA_CENTER)
-
-    # ── Precise page geometry ──────────────────────────────────────────────────
-    # Usable height = 29.7 - 2.6 = 27.1 cm
-    # Fixed elements (measured in cm):
-    #   banner=1.1, spacer=0.14, meta=0.7, spacer=0.18
-    #   sh_data=0.45, rule=0.15, spacer_mid=0.2
-    #   sh_interp=0.45, rule=0.15, spacer2=0.1
-    #   footer_spacer=0.1, rule=0.1, footer=0.2
-    # Total fixed ≈ 4.03 cm
-    # Remaining for table + interp = 27.1 - 4.03 = 23.07 cm
-    # Split: table = 11.5 cm, interp = 11.57 cm
+    TITLE   = S("T",  fontName="Helvetica-Bold",   fontSize=13, textColor=WHITE,  leading=16, alignment=TA_CENTER)
+    TSUB    = S("TS", fontName="Helvetica",         fontSize=8,  textColor=HexColor("#A8C8E8"), leading=10, alignment=TA_CENTER)
+    META_B  = S("MB", fontName="Helvetica-Bold",    fontSize=8,  textColor=STEEL,  leading=10)
+    META    = S("M",  fontName="Helvetica",         fontSize=8,  textColor=TEXT_M, leading=10)
+    SH      = S("SH", fontName="Helvetica-Bold",    fontSize=9,  textColor=STEEL,  leading=11, spaceBefore=6, spaceAfter=3)
+    SH_TEAL = S("ST", fontName="Helvetica-Bold",    fontSize=9,  textColor=TEAL,   leading=11, spaceBefore=6, spaceAfter=3)
+    TH      = S("TH", fontName="Helvetica-Bold",    fontSize=6.5,textColor=STEEL,  leading=8,  alignment=TA_CENTER)
+    TD      = S("TD", fontName="Helvetica",         fontSize=6.5,textColor=TEXT,   leading=8,  alignment=TA_CENTER)
+    BODY    = S("B",  fontName="Helvetica",         fontSize=9,  textColor=TEXT,   leading=13, spaceAfter=6, alignment=TA_JUSTIFY)
+    BODY_SM = S("BS", fontName="Helvetica",         fontSize=8.5,textColor=TEXT,   leading=12, spaceAfter=4, alignment=TA_JUSTIFY)
+    SEC_LBL = S("SL", fontName="Helvetica-Bold",    fontSize=8,  textColor=STEEL,  leading=10)
+    SEC_TEAL= S("STL",fontName="Helvetica-Bold",    fontSize=8,  textColor=TEAL,   leading=10)
+    FOOT    = S("F",  fontName="Helvetica-Oblique", fontSize=6.5,textColor=TEXT_L, alignment=TA_CENTER)
+    BADGE   = S("BG", fontName="Helvetica-Bold",    fontSize=7,  textColor=WHITE,  leading=9,  alignment=TA_CENTER)
 
     W_page, H_page = A4
-    LM = RM = 1.4*cm
+    LM = RM = 1.5*cm
     TM = BM = 1.3*cm
     W = W_page - LM - RM
-
-    TABLE_H  = 11.5*cm   # exact height budget for the session table
-    INTERP_H = 11.2*cm   # exact height budget for interpretation (5 sections)
-    SEC_H    = INTERP_H / 5   # each section gets equal fixed height
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4,
@@ -213,47 +228,83 @@ def build_pdf(patient_name: str, sessions: list, report_text: str) -> BytesIO:
                             topMargin=TM,  bottomMargin=BM)
     story = []
 
-    # ── Banner ──
-    banner = Table([
-        [Paragraph("nIR HEG NEUROFEEDBACK — Clinical Progress Report", TITLE)],
-        [Paragraph("Dr. Hany Elhennawy Psychiatric Center", TSUB)],
-    ], colWidths=[W], rowHeights=[0.65*cm, 0.45*cm])
-    banner.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0),(-1,-1), NAVY),
-        ("TOPPADDING",    (0,0),(-1,-1), 5),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 5),
-        ("LEFTPADDING",   (0,0),(-1,-1), 12),
-        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
-    ]))
-    story.append(banner)
-    story.append(Spacer(1, 4))
+    def banner(subtitle, badge_text, badge_color):
+        """Reusable page banner with a colored badge indicating audience"""
+        badge_col = 2.2*cm
+        title_col = W - badge_col
+        return Table([[
+            Paragraph("nIR HEG NEUROFEEDBACK — Progress Report", TITLE),
+            Paragraph(badge_text, BADGE),
+        ]], colWidths=[title_col, badge_col],
+        rowHeights=[1.1*cm])
 
-    # ── Meta ──
-    mc = [1.5*cm, 4.2*cm, 1.7*cm, 1.5*cm, 2.0*cm, W-10.9*cm]
-    meta_tbl = Table([[
-        Paragraph("Patient:", META_B), Paragraph(patient_name, META),
-        Paragraph("Sessions:", META_B), Paragraph(str(len(sessions)), META),
-        Paragraph("Date:", META_B), Paragraph(datetime.now().strftime("%d.%m.%Y"), META),
-    ]], colWidths=mc, rowHeights=[0.55*cm])
-    meta_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0),(-1,-1), ICE),
-        ("BOX",           (0,0),(-1,-1), 0.5, SILVER),
-        ("TOPPADDING",    (0,0),(-1,-1), 4),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 4),
-        ("LEFTPADDING",   (0,0),(-1,-1), 7),
-        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
-    ]))
-    story.append(meta_tbl)
+    def page_banner(badge_text, badge_color):
+        badge_col = 2.2*cm
+        title_col = W - badge_col
+        tbl = Table([[
+            [Paragraph("nIR HEG NEUROFEEDBACK — Progress Report", TITLE),
+             Paragraph("Dr. Hany Elhennawy Psychiatric Center", TSUB)],
+            Paragraph(badge_text, BADGE),
+        ]], colWidths=[title_col, badge_col])
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0),(0,-1), NAVY),
+            ("BACKGROUND",    (1,0),(1,-1), badge_color),
+            ("TOPPADDING",    (0,0),(-1,-1), 6),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 6),
+            ("LEFTPADDING",   (0,0),(0,-1), 12),
+            ("LEFTPADDING",   (1,0),(1,-1), 4),
+            ("RIGHTPADDING",  (0,0),(-1,-1), 6),
+            ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+            ("ALIGN",         (1,0),(1,-1), "CENTER"),
+        ]))
+        return tbl
+
+    def meta_strip(extra_label=None, extra_val=None):
+        items = [
+            Paragraph("Patient:", META_B), Paragraph(patient_name, META),
+            Paragraph("Sessions:", META_B), Paragraph(str(len(sessions)), META),
+            Paragraph("Date:", META_B), Paragraph(datetime.now().strftime("%d.%m.%Y"), META),
+        ]
+        if extra_label:
+            items += [Paragraph(extra_label, META_B), Paragraph(extra_val, META)]
+            mc = [1.5*cm, 3.8*cm, 1.7*cm, 1.5*cm, 1.8*cm, 2.5*cm, 2.0*cm, W-14.8*cm]
+        else:
+            mc = [1.5*cm, 4.2*cm, 1.7*cm, 1.5*cm, 1.8*cm, W-10.7*cm]
+        tbl = Table([items], colWidths=mc, rowHeights=[0.55*cm])
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0),(-1,-1), ICE),
+            ("BOX",           (0,0),(-1,-1), 0.5, SILVER),
+            ("TOPPADDING",    (0,0),(-1,-1), 4),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 4),
+            ("LEFTPADDING",   (0,0),(-1,-1), 7),
+            ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        ]))
+        return tbl
+
+    def footer_line(label):
+        story.append(Spacer(1, 5))
+        story.append(HRFlowable(width="100%", thickness=0.4, color=SILVER, spaceAfter=3))
+        story.append(Paragraph(
+            f"nIR HEG Sessions · Dr. Hany Elhennawy Psychiatric Center · "
+            f"Generated {datetime.now().strftime('%d.%m.%Y %H:%M')} · {label}",
+            FOOT))
+
+    # ══════════════════════════════════════════════════════
+    # PAGE 1 — FOR PARENTS: full data table + session overview
+    # ══════════════════════════════════════════════════════
+
+    story.append(page_banner("FOR PARENTS", HexColor("#3A8A8F")))
     story.append(Spacer(1, 5))
+    story.append(meta_strip())
+    story.append(Spacer(1, 8))
 
-    # ════════════════════════════════════
-    # TOP HALF — fixed-height session table
-    # ════════════════════════════════════
-    story.append(Paragraph("Session Data", SH))
-    story.append(HRFlowable(width="100%", thickness=0.7, color=STEEL, spaceAfter=3))
+    # ── Full session data table ──
+    story.append(Paragraph("Session Data — Complete Record", SH))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=STEEL, spaceAfter=4))
 
-    hdr_labels = ["#","Date","Dur.","Mean","Max","Min","Range","%Corr","Thr\nMin","Thr\nMax","Diff","Pts"]
-    sw_cm = [0.5, 1.75, 1.65, 1.15, 1.15, 1.15, 1.15, 1.3, 1.3, 1.3, 1.5, 1.3]
+    hdr_labels = ["#", "Date", "Duration", "Mean\nHEG", "Max\nHEG", "Min\nHEG",
+                  "Range", "% Correct", "Thresh.\nMin", "Thresh.\nMax", "Difficulty", "Points"]
+    sw_cm = [0.6, 1.9, 1.8, 1.3, 1.3, 1.3, 1.3, 1.5, 1.5, 1.5, 1.7, 1.4]
     sw = [x*cm for x in sw_cm]
     sw[-1] = W - sum(sw[:-1])
 
@@ -273,56 +324,111 @@ def build_pdf(patient_name: str, sessions: list, report_text: str) -> BytesIO:
             t.get("difficulty","—"), t.get("points","—"),
         ]])
 
-    # Fixed row heights: header 0.75cm, data rows fill rest of TABLE_H
+    # Row heights: aim for ~13cm total table height
     n_sessions = max(len(sessions), 1)
-    HDR_ROW_H  = 0.75*cm
-    DATA_ROW_H = (TABLE_H - HDR_ROW_H) / n_sessions
+    HDR_H  = 0.85*cm
+    DATA_H = max(0.65*cm, min(1.1*cm, (13.0*cm - HDR_H) / n_sessions))
 
     s_tbl = Table(s_rows, colWidths=sw, repeatRows=1,
-                  rowHeights=[HDR_ROW_H] + [DATA_ROW_H]*len(sessions))
+                  rowHeights=[HDR_H] + [DATA_H]*len(sessions))
     alt = [("BACKGROUND", (0,r),(-1,r), fills[r%2]) for r in range(1, len(s_rows))]
     s_tbl.setStyle(TableStyle([
         ("BACKGROUND",    (0,0),(-1,0), NAVY),
         ("TEXTCOLOR",     (0,0),(-1,0), WHITE),
         *alt,
-        ("BOX",           (0,0),(-1,-1), 0.6, STEEL_L),
-        ("INNERGRID",     (0,0),(-1,-1), 0.25, SILVER),
-        ("TOPPADDING",    (0,0),(-1,-1), 2),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 2),
-        ("LEFTPADDING",   (0,0),(-1,-1), 3),
-        ("RIGHTPADDING",  (0,0),(-1,-1), 2),
+        ("BOX",           (0,0),(-1,-1), 0.7, STEEL_L),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, SILVER),
+        ("TOPPADDING",    (0,0),(-1,-1), 3),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 3),
+        ("LEFTPADDING",   (0,0),(-1,-1), 4),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 3),
         ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
     ]))
     story.append(s_tbl)
+    story.append(Spacer(1, 10))
+
+    # ── Session overview for parents ──
+    story.append(Paragraph("Session Overview", SH_TEAL))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=TEAL, spaceAfter=6))
+
+    overview_box = Table([[Paragraph(report["overview"], BODY)]],
+                         colWidths=[W])
+    overview_box.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,-1), TEAL_L),
+        ("BOX",           (0,0),(-1,-1), 0.8, TEAL),
+        ("TOPPADDING",    (0,0),(-1,-1), 12),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 12),
+        ("LEFTPADDING",   (0,0),(-1,-1), 14),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 14),
+    ]))
+    story.append(overview_box)
+    story.append(Spacer(1, 10))
+
+    # ── Quick legend for parents ──
+    legend_items = [
+        ("% Correct", ">75% = Excellent   |   60–75% = Good   |   45–60% = Moderate   |   <45% = Needs review"),
+        ("Points",    "Combined score of success rate and difficulty. Rising over sessions = real progress."),
+        ("Mean HEG",  "Average brain activation level per session. Higher and rising = PFC engagement improving."),
+        ("Threshold", "The target level set for the session. Rising Min/Max = brain being challenged more over time."),
+    ]
+    leg_rows = []
+    for label, desc in legend_items:
+        leg_rows.append(Table([[
+            Paragraph(label, S("ll", fontName="Helvetica-Bold", fontSize=8, textColor=STEEL, leading=10)),
+            Paragraph(desc,  S("ld", fontName="Helvetica",      fontSize=8, textColor=TEXT_M, leading=10)),
+        ]], colWidths=[2.4*cm, W-2.4*cm]))
+    
+    legend_data = [[
+        Paragraph(label, S("ll", fontName="Helvetica-Bold", fontSize=7.5, textColor=STEEL, leading=10)),
+        Paragraph(desc,  S("ld", fontName="Helvetica",      fontSize=7.5, textColor=TEXT_M, leading=10)),
+    ] for label, desc in legend_items]
+    
+    leg_tbl = Table(legend_data, colWidths=[2.5*cm, W-2.5*cm])
+    leg_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,-1), ICE2),
+        ("BOX",           (0,0),(-1,-1), 0.5, SILVER),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, SILVER),
+        ("TOPPADDING",    (0,0),(-1,-1), 5),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 5),
+        ("LEFTPADDING",   (0,0),(-1,-1), 8),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 6),
+        ("VALIGN",        (0,0),(-1,-1), "TOP"),
+    ]))
+    story.append(Paragraph("Quick Reference Guide", S("qr", fontName="Helvetica-Bold", fontSize=8, textColor=TEXT_M, leading=10, spaceAfter=4)))
+    story.append(leg_tbl)
+
+    footer_line("Patient / Parent Copy")
+
+    # ══════════════════════════════════════════════════════
+    # PAGE 2 — FOR CLINIC STAFF: clinical interpretation
+    # ══════════════════════════════════════════════════════
+    story.append(PageBreak())
+
+    story.append(page_banner("CLINICAL STAFF", HexColor("#4A6FA5")))
     story.append(Spacer(1, 5))
+    story.append(meta_strip())
+    story.append(Spacer(1, 10))
 
-    # ════════════════════════════════════
-    # BOTTOM HALF — fixed-height sections
-    # ════════════════════════════════════
     story.append(Paragraph("Clinical Interpretation", SH))
-    story.append(HRFlowable(width="100%", thickness=0.7, color=STEEL, spaceAfter=3))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=STEEL, spaceAfter=8))
 
-    sections = [
-        ("SESSION OVERVIEW",           ICE2,   False),
-        ("METRICS ANALYSIS",           WARM,   False),
-        ("CORTICAL ACTIVATION",        ICE2,   False),
-        ("PROGRESS & RECOMMENDATIONS", WARM,   False),
-        ("PHYSICIAN SUMMARY",          TEAL_L, True),
+    # Parse the clinical sections from Groq output
+    clinical_sections = [
+        ("METRICS ANALYSIS",           ICE2,   STEEL,   False),
+        ("CORTICAL ACTIVATION",        WARM,   STEEL,   False),
+        ("PROGRESS & RECOMMENDATIONS", ICE2,   STEEL,   False),
+        ("PHYSICIAN SUMMARY",          TEAL_L, TEAL,    True),
     ]
 
-    # Label row height + body row height = SEC_H per section
-    LBL_H  = 0.38*cm
-    BODY_H = SEC_H - LBL_H - 0.04*cm  # tiny gap buffer
-
-    remaining = report_text
-    for title, fill, is_summary in sections:
+    remaining = report["clinical"]
+    for title, fill, border_color, is_summary in clinical_sections:
         if title not in remaining:
             body_text = ""
         else:
             parts = remaining.split(title, 1)
             remaining = parts[1] if len(parts) > 1 else ""
             next_start = len(remaining)
-            for other, _, _ in sections:
+            for other, _, _, _ in clinical_sections:
                 if other != title and other in remaining:
                     idx = remaining.index(other)
                     if idx < next_start:
@@ -330,42 +436,88 @@ def build_pdf(patient_name: str, sessions: list, report_text: str) -> BytesIO:
             body_text = remaining[:next_start].strip()
             remaining = remaining[next_start:]
 
-        label     = "Physician Summary" if is_summary else title.title()
-        lbl_color = TEAL if is_summary else STEEL
-        lbl_fill  = TEAL_L if is_summary else HexColor("#DDEEF9")
+        display_title = "🩺 Physician Summary" if is_summary else title.title()
+        label_style   = SEC_TEAL if is_summary else SEC_LBL
+        lbl_fill      = HexColor("#D4EEF0") if is_summary else HexColor("#DDEEF9")
 
         sec = Table([
-            [Paragraph(label, S("sl", fontName="Helvetica-Bold", fontSize=7,
-                                textColor=lbl_color, leading=9))],
-            [Paragraph(body_text, BODY)],
-        ], colWidths=[W], rowHeights=[LBL_H, BODY_H])
+            [Paragraph(display_title, label_style)],
+            [Paragraph(body_text, BODY_SM)],
+        ], colWidths=[W])
         sec.setStyle(TableStyle([
             ("BACKGROUND",    (0,0),(-1,-1), fill),
             ("BACKGROUND",    (0,0),(0,0),   lbl_fill),
-            ("BOX",           (0,0),(-1,-1), 0.4, SILVER),
-            ("LINEBELOW",     (0,0),(0,0),   0.3, SILVER),
-            ("TOPPADDING",    (0,0),(-1,-1), 3),
-            ("BOTTOMPADDING", (0,0),(-1,-1), 3),
-            ("LEFTPADDING",   (0,0),(-1,-1), 6),
-            ("RIGHTPADDING",  (0,0),(-1,-1), 6),
+            ("BOX",           (0,0),(-1,-1), 0.6, border_color),
+            ("LINEBELOW",     (0,0),(0,0),   0.4, SILVER),
+            ("TOPPADDING",    (0,0),(-1,-1), 7),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 7),
+            ("LEFTPADDING",   (0,0),(-1,-1), 10),
+            ("RIGHTPADDING",  (0,0),(-1,-1), 10),
             ("VALIGN",        (0,0),(-1,-1), "TOP"),
         ]))
         story.append(sec)
+        story.append(Spacer(1, 6))
 
-    # ── Footer ──
-    story.append(Spacer(1, 3))
-    story.append(HRFlowable(width="100%", thickness=0.4, color=SILVER, spaceAfter=2))
-    story.append(Paragraph(
-        f"nIR HEG Sessions · Dr. Hany Elhennawy Psychiatric Center · "
-        f"Generated {datetime.now().strftime('%d.%m.%Y %H:%M')} · For clinical use only",
-        FOOT))
+    story.append(Spacer(1, 10))
+
+    # ── Trend summary table on page 2 ──
+    story.append(Paragraph("Metrics Trend Summary", SH))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=STEEL, spaceAfter=6))
+
+    def get_trend(key):
+        vals = [s.get("total",{}).get(key) for s in sessions if s.get("total",{}).get(key) is not None]
+        if len(vals) < 2: return "—", "—", "—"
+        first, last = vals[0], vals[-1]
+        arrow = "↑ Improving" if last > first else ("↓ Declining" if last < first else "= Stable")
+        return str(first), str(last), arrow
+
+    trend_metrics = [
+        ("Mean HEG",       "mean"),
+        ("Max HEG",        "max"),
+        ("% Correct",      "percent_correct"),
+        ("Points",         "points"),
+        ("Threshold Min",  "threshold_min"),
+        ("Threshold Max",  "threshold_max"),
+    ]
+
+    trend_hdr = [Paragraph(t, TH) for t in ["Metric", "First Session", "Last Session", "Trend"]]
+    trend_rows = [trend_hdr]
+    for label, key in trend_metrics:
+        first, last, arrow = get_trend(key)
+        color = HexColor("#1E8449") if "↑" in arrow else (HexColor("#C0392B") if "↓" in arrow else TEXT_M)
+        trend_rows.append([
+            Paragraph(label, S("tl", fontName="Helvetica-Bold", fontSize=8, textColor=NAVY, leading=10)),
+            Paragraph(first, S("tv", fontName="Helvetica", fontSize=8, textColor=TEXT_M, leading=10, alignment=TA_CENTER)),
+            Paragraph(last,  S("tv2",fontName="Helvetica", fontSize=8, textColor=TEXT_M, leading=10, alignment=TA_CENTER)),
+            Paragraph(arrow, S("ta", fontName="Helvetica-Bold", fontSize=8, textColor=color, leading=10, alignment=TA_CENTER)),
+        ])
+
+    tw = [3.5*cm, 3.0*cm, 3.0*cm, W-9.5*cm]
+    t_tbl = Table(trend_rows, colWidths=tw)
+    alt2 = [("BACKGROUND", (0,r),(-1,r), ICE if r%2==0 else WARM) for r in range(1, len(trend_rows))]
+    t_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,0), NAVY),
+        ("TEXTCOLOR",     (0,0),(-1,0), WHITE),
+        *alt2,
+        ("BOX",           (0,0),(-1,-1), 0.7, STEEL_L),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, SILVER),
+        ("TOPPADDING",    (0,0),(-1,-1), 6),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 6),
+        ("LEFTPADDING",   (0,0),(-1,-1), 8),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 6),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        ("ALIGN",         (1,0),(-1,-1), "CENTER"),
+    ]))
+    story.append(t_tbl)
+
+    footer_line("Clinical Staff Copy — Confidential")
 
     doc.build(story)
     buf.seek(0)
     return buf
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UI
+# UI — identical to original
 # ══════════════════════════════════════════════════════════════════════════════
 
 if not st.session_state.authenticated:
@@ -512,18 +664,23 @@ with tab2:
 
         st.divider()
         st.markdown("### Generate Clinical Report")
-        st.caption(f"1-page PDF: session data table (top half) + clinical interpretation (bottom half).")
+        st.caption("2-page PDF — Page 1 (parent copy): full data table + plain-language overview · Page 2 (staff copy): clinical interpretation + trend summary")
 
         if st.button("📋 Generate Report", type="primary"):
             with st.spinner("Generating report with Groq..."):
                 try:
-                    report_text = generate_report(patient, sessions)
-                    pdf_buf     = build_pdf(patient, sessions, report_text)
-                    st.success("✅ Report ready!")
-                    with st.expander("Preview report text"):
-                        st.text(report_text)
+                    report  = generate_report(patient, sessions)
+                    pdf_buf = build_pdf(patient, sessions, report)
+                    st.success("✅ Report ready — 2 pages generated!")
+
+                    with st.expander("Preview report content"):
+                        st.markdown("**Page 1 — Session Overview (Parent Copy):**")
+                        st.text(report["overview"])
+                        st.markdown("**Page 2 — Clinical Interpretation (Staff Copy):**")
+                        st.text(report["clinical"])
+
                     fname = f"HEG_Report_{patient.replace(' ','_')}_{datetime.now().strftime('%Y%m%d')}.pdf"
-                    st.download_button("⬇️ Download PDF Report", data=pdf_buf,
+                    st.download_button("⬇️ Download 2-Page PDF Report", data=pdf_buf,
                                        file_name=fname, mime="application/pdf")
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error generating report: {e}")
