@@ -134,54 +134,59 @@ def generate_report(patient_name, sessions):
     n_f = sum(1 for s in sessions if s.get("mode")=="flexibility")
     ms  = f"Concentration: {n_c} | Relaxation: {n_r} | Flexibility: {n_f}"
 
-    p1 = f"""Write a session summary for a PARENT. Plain non-technical language. Factual only — zero interpretation, zero progress judgment. No words like improving/better/progress/enhanced/encouraging.
+    # ── Patient copy prompt ──
+    p1 = f"""Write a plain-language session summary for a patient receiving HEG neurofeedback. Simple, warm, non-technical. Factual only.
 
 Patient: {patient_name} | Sessions: {len(sessions)} | {ms}
 Data:
 {chr(10).join(lines)}
 
-Write EXACTLY this section. 4-5 sentences. No bullets. No markdown.
-SESSION OVERVIEW FOR PARENT
-State only: total sessions, date range, session durations, how many were each mode (use plain words: focus training / relaxation training / flexibility training), and typical difficulty level. Read like a logbook, not a progress report."""
+Write EXACTLY this section. 4-5 sentences. No bullets. No markdown. No interpretation or judgment.
+
+SESSION OVERVIEW
+First 1-2 sentences: briefly explain in plain language what the training mode(s) used actually involve — what the brain is doing during this type of session, what the sensor measures, and what the patient is training. Keep this educational and simple, not clinical.
+Remaining sentences: state only facts — total sessions, date range, session durations, mode(s) used (use plain words: focus training / relaxation training / flexibility training), and difficulty level used.
+Do NOT evaluate results, do NOT mention absent modes, do NOT use words like improving/better/progress/declining."""
 
     r1 = client.chat.completions.create(model="llama-3.3-70b-versatile",
-        messages=[{"role":"user","content":p1}], max_tokens=300, temperature=0.3)
-    overview = re.sub(r'^SESSION OVERVIEW FOR PARENT\s*\n?','',
+        messages=[{"role":"user","content":p1}], max_tokens=320, temperature=0.3)
+    overview = re.sub(r'^SESSION OVERVIEW\s*\n?','',
                       r1.choices[0].message.content.strip(), flags=re.IGNORECASE).strip()
 
-    p2 = f"""You are a senior clinical neuropsychologist. Write a mode-aware HEG neurofeedback report for clinic staff using this framework:
+    # ── Clinical copy prompt ──
+    p2 = f"""You are preparing a preliminary HEG neurofeedback signal observation summary to support Dr. Hany Elhennawy's clinical review. Your role is to describe what the recorded data shows — not to evaluate the protocol, not to make recommendations to the physician, and not to draw clinical conclusions. Dr. Hany holds full clinical authority. Present observations only.
 
-CLINICAL FRAMEWORK:
-- Concentration (∧): Goal = upregulation. Interpret Mean trend, Threshold Max rise, %Correct. HIGH RANGE in concentration = signal instability warning — flag it explicitly.
-- Relaxation (∨): Goal = stabilization. Interpret Range trend (narrowing = progress), %Correct, stability. Rising mean alone is NOT the goal here.
-- Flexibility (⇅): Goal = volitional bidirectional control. Interpret both concentration and relaxation sub-data. Comment on the patient's ability to shift between modes.
-- Signal Quality over Magnitude: A stable moderate Mean is clinically superior to a high unstable Mean.
-- If Range is wide relative to Mean across sessions, flag cortical instability even if Mean appears adequate.
-- Comment on whether difficulty level was appropriate for the signal pattern observed.
+IMPORTANT RULES:
+- Describe signal behaviour, do not evaluate or judge it
+- Do not use: recommend, should, inadequate, concerning, failed, missed, needs, must, verdict, suggests a problem
+- Do not comment on what modes were absent or what should have been done
+- Range values may reflect normal calibration variation — describe them neutrally, do not pathologise them
+- Present all observations as data points for the physician's review, not as findings or conclusions
+- Tone: a careful technician presenting recorded measurements to a senior clinician
 
 Patient: {patient_name} | Sessions: {len(sessions)} | {ms}
 Data:
 {chr(10).join(lines)}
 
-Write EXACTLY these 4 sections. 3-4 sentences each. Cite real numbers. Be clinically expressive — interpret what the numbers mean, not just what they are. No bullets. No markdown.
+Write EXACTLY these 3 sections. 3 sentences each. Cite numbers. No bullets. No markdown.
 
-METRICS ANALYSIS
-Analyse each mode separately. Concentration: Mean first vs last, Threshold Min/Max evolution, %Correct. Relaxation: Range first vs last, stability, %Correct. Flexibility if present: both dimensions. Note difficulty progression.
+METRICS OVERVIEW
+Describe the session metrics across the training block by mode. For concentration: state Mean values across sessions, Threshold Min/Max range, %Correct values, Points. For relaxation: state Range values, %Correct, Mean. For flexibility: describe both dimensions. Present the numbers as observed values only.
 
-SIGNAL QUALITY & ACTIVATION PATTERN
-Interpret the hemodynamic response quality. Comment on Range relative to Mean (stability vs instability), any variability flags, what the pattern reveals about PFC regulatory capacity. Apply signal quality framework — quality over amplitude.
+SIGNAL BEHAVIOUR
+Describe the pattern of the HEG signal across sessions — how Mean, Range, and Threshold values varied from session to session. Note any variation in Range values across sessions briefly and neutrally. Describe how %Correct related to Threshold changes across the block. Present as observed signal behaviour only.
 
-PROGRESS & RECOMMENDATIONS
-Clear verdict per mode with numbers. Give 2-3 specific clinical recommendations for next block: mode selection rationale, difficulty adjustment, any protocol changes based on signal behaviour.
-
-PHYSICIAN SUMMARY
-2 sentences only. Overall verdict across all modes. One clear clinical next step."""
+SESSION PATTERN NOTES
+Describe the overall pattern of the recorded sessions — difficulty levels used, session durations, and how the key metrics moved across the training block. Present as a factual description of what the data shows, for Dr. Hany's clinical review."""
 
     r2 = client.chat.completions.create(model="llama-3.3-70b-versatile",
-        messages=[{"role":"user","content":p2}], max_tokens=700, temperature=0.3)
+        messages=[{"role":"user","content":p2}], max_tokens=600, temperature=0.25)
 
-    return {"overview":overview, "clinical":r2.choices[0].message.content.strip(),
-            "n_conc":n_c, "n_relax":n_r, "n_flex":n_f}
+    return {
+        "overview": overview,
+        "clinical": r2.choices[0].message.content.strip(),
+        "n_conc": n_c, "n_relax": n_r, "n_flex": n_f,
+    }
 
 # ── PDF ─────────────────────────────────────────────────────────────────────
 def build_pdf(patient_name, sessions, report):
@@ -191,6 +196,7 @@ def build_pdf(patient_name, sessions, report):
     TEXT_M = HexColor("#5A6880"); TEXT_L = HexColor("#8A96A8"); STEEL_L= HexColor("#6B8FC2")
     PURPLE = HexColor("#6B2FA0"); PURP_L = HexColor("#F0E8FB")
     CONC_L = HexColor("#EAF1FB"); RELX_L = HexColor("#E3F4F5"); FLEX_L = HexColor("#F0E8FB")
+    AMBER  = HexColor("#FEF3CD"); AMBER_B= HexColor("#D4A017")
     GREEN  = HexColor("#1E8449"); RED    = HexColor("#C0392B"); WHITE  = colors.white
 
     def S(n,**k): return ParagraphStyle(n,**k)
@@ -198,21 +204,28 @@ def build_pdf(patient_name, sessions, report):
     TSUB   = S("TS",fontName="Helvetica",        fontSize=7.5,textColor=HexColor("#A8C8E8"),leading=9,alignment=TA_CENTER)
     META_B = S("MB",fontName="Helvetica-Bold",   fontSize=8, textColor=STEEL, leading=10)
     META   = S("M", fontName="Helvetica",        fontSize=8, textColor=TEXT_M,leading=10)
-    SH     = S("SH",fontName="Helvetica-Bold",   fontSize=9, textColor=STEEL, leading=11,spaceBefore=5,spaceAfter=3)
-    SH_T   = S("ST",fontName="Helvetica-Bold",   fontSize=9, textColor=TEAL,  leading=11,spaceBefore=5,spaceAfter=3)
+    SH     = S("SH",fontName="Helvetica-Bold",   fontSize=9, textColor=STEEL, leading=11,spaceBefore=4,spaceAfter=3)
+    SH_T   = S("ST",fontName="Helvetica-Bold",   fontSize=9, textColor=TEAL,  leading=11,spaceBefore=4,spaceAfter=3)
     TH     = S("TH",fontName="Helvetica-Bold",   fontSize=6, textColor=STEEL, leading=7.5,alignment=TA_CENTER)
     TD     = S("TD",fontName="Helvetica",        fontSize=6, textColor=TEXT,  leading=7.5,alignment=TA_CENTER)
-    BODY   = S("B", fontName="Helvetica",        fontSize=9, textColor=TEXT,  leading=13, spaceAfter=5,alignment=TA_JUSTIFY)
-    BODY_S = S("BS",fontName="Helvetica",        fontSize=8.5,textColor=TEXT, leading=12, spaceAfter=4,alignment=TA_JUSTIFY)
-    SECLBL = S("SL",fontName="Helvetica-Bold",   fontSize=8, textColor=STEEL, leading=10)
-    SECT   = S("SLT",fontName="Helvetica-Bold",  fontSize=8, textColor=TEAL,  leading=10)
+    BODY   = S("B", fontName="Helvetica",        fontSize=8.5,textColor=TEXT, leading=12.5,spaceAfter=4,alignment=TA_JUSTIFY)
+    BODY_S = S("BS",fontName="Helvetica",        fontSize=8, textColor=TEXT,  leading=11.5,spaceAfter=3,alignment=TA_JUSTIFY)
+    SECLBL = S("SL",fontName="Helvetica-Bold",   fontSize=7.5,textColor=STEEL,leading=10)
+    SECT   = S("SLT",fontName="Helvetica-Bold",  fontSize=7.5,textColor=TEAL, leading=10)
+    DISC   = S("DC",fontName="Helvetica-Oblique",fontSize=7.5,textColor=HexColor("#7A5800"),leading=10,alignment=TA_CENTER)
     FOOT   = S("F", fontName="Helvetica-Oblique",fontSize=6.5,textColor=TEXT_L,alignment=TA_CENTER)
 
-    LM=RM=1.5*cm; TM=BM=1.3*cm
+    LM=RM=1.5*cm; TM=BM=1.2*cm
     W_page,H_page = A4; W = W_page-LM-RM
     buf = BytesIO()
     doc = SimpleDocTemplate(buf,pagesize=A4,leftMargin=LM,rightMargin=RM,topMargin=TM,bottomMargin=BM)
     story = []
+
+    DISCLAIMER_TEXT = (
+        "This document presents a preliminary data summary generated from recorded session metrics. "
+        "It does not constitute a clinical assessment or final interpretation. "
+        "The patient should receive the final clinical interpretation directly from Dr. Hany Elhennawy."
+    )
 
     def banner(badge_txt, badge_col):
         bw=2.4*cm; tw=W-bw
@@ -243,18 +256,30 @@ def build_pdf(patient_name, sessions, report):
         ]))
         return t
 
+    def disclaimer_box():
+        t=Table([[Paragraph(DISCLAIMER_TEXT,DISC)]],colWidths=[W])
+        t.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,-1),AMBER),
+            ("BOX",(0,0),(-1,-1),0.7,AMBER_B),
+            ("TOPPADDING",(0,0),(-1,-1),7),("BOTTOMPADDING",(0,0),(-1,-1),7),
+            ("LEFTPADDING",(0,0),(-1,-1),12),("RIGHTPADDING",(0,0),(-1,-1),12),
+        ]))
+        return t
+
     def mode_fill(m):
         return FLEX_L if m=="flexibility" else (RELX_L if m=="relaxation" else CONC_L)
 
     def footer(label):
-        story.append(Spacer(1,5))
+        story.append(Spacer(1,4))
         story.append(HRFlowable(width="100%",thickness=0.4,color=SILVER,spaceAfter=3))
         story.append(Paragraph(
             f"nIR HEG Sessions · Dr. Hany Elhennawy Psychiatric Center · "
             f"Generated {datetime.now().strftime('%d.%m.%Y %H:%M')} · {label}",FOOT))
 
-    # ── PAGE 1 ────────────────────────────────────────────────────────────────
-    story.append(banner("FOR PARENTS",TEAL))
+    # ═══════════════════════════════════════════
+    # PAGE 1 — PATIENT COPY
+    # ═══════════════════════════════════════════
+    story.append(banner("PATIENT COPY",TEAL))
     story.append(Spacer(1,4))
     story.append(meta_strip())
     story.append(Spacer(1,5))
@@ -262,9 +287,9 @@ def build_pdf(patient_name, sessions, report):
     # Mode summary strip
     nc,nr,nf = report["n_conc"],report["n_relax"],report["n_flex"]
     mode_items=[]
-    if nc: mode_items.append((f"∧  Concentration — {nc} session{'s' if nc>1 else ''}",STEEL,CONC_L))
-    if nr: mode_items.append((f"∨  Relaxation — {nr} session{'s' if nr>1 else ''}",TEAL,RELX_L))
-    if nf: mode_items.append((f"⇅  Flexibility — {nf} session{'s' if nf>1 else ''}",PURPLE,FLEX_L))
+    if nc: mode_items.append((f"∧  Focus Training — {nc} session{'s' if nc>1 else ''}",STEEL,CONC_L))
+    if nr: mode_items.append((f"∨  Relaxation Training — {nr} session{'s' if nr>1 else ''}",TEAL,RELX_L))
+    if nf: mode_items.append((f"⇅  Flexibility Training — {nf} session{'s' if nf>1 else ''}",PURPLE,PURP_L))
     if mode_items:
         sw2=W/len(mode_items)
         cells=[Table([[Paragraph(txt,S("mc",fontName="Helvetica-Bold",fontSize=8.5,
@@ -276,11 +301,11 @@ def build_pdf(patient_name, sessions, report):
             ("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),
             *[("BACKGROUND",(i,0),(i,0),mode_items[i][2]) for i in range(len(mode_items))],
         ]))
-        story.append(st2); story.append(Spacer(1,6))
+        story.append(st2); story.append(Spacer(1,5))
 
     # Session table
-    story.append(Paragraph("Session Data — Complete Record",SH))
-    story.append(HRFlowable(width="100%",thickness=0.8,color=STEEL,spaceAfter=4))
+    story.append(Paragraph("Session Data",SH))
+    story.append(HRFlowable(width="100%",thickness=0.8,color=STEEL,spaceAfter=3))
 
     hdr=["#","Date","Dur.","Mode","Difficulty","Mean","Max","Min","Range","%Corr","Thr\nMin","Thr\nMax","Points"]
     scm=[0.5,1.7,1.55,1.5,1.6,1.1,1.1,1.1,1.1,1.2,1.2,1.2,1.2]
@@ -298,7 +323,7 @@ def build_pdf(patient_name, sessions, report):
             t2.get("threshold_min","—"),t2.get("threshold_max","—"),t2.get("points","—"),
         ]])
     n_s=max(len(sessions),1); HDR_H=0.85*cm
-    DATA_H=max(0.6*cm,min(1.05*cm,(12.5*cm-HDR_H)/n_s))
+    DATA_H=max(0.58*cm,min(1.0*cm,(11.0*cm-HDR_H)/n_s))
     st3=Table(s_rows,colWidths=sw,repeatRows=1,rowHeights=[HDR_H]+[DATA_H]*len(sessions))
     alt=[("BACKGROUND",(0,r+1),(-1,r+1),row_fills[r]) for r in range(len(sessions))]
     st3.setStyle(TableStyle([
@@ -308,7 +333,7 @@ def build_pdf(patient_name, sessions, report):
         ("LEFTPADDING",(0,0),(-1,-1),4),("RIGHTPADDING",(0,0),(-1,-1),3),
         ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
     ]))
-    story.append(st3); story.append(Spacer(1,5))
+    story.append(st3); story.append(Spacer(1,4))
 
     # Colour legend
     if mode_items:
@@ -322,61 +347,68 @@ def build_pdf(patient_name, sessions, report):
             ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
             *[("BACKGROUND",(i,0),(i,0),mode_items[i][2]) for i in range(len(mode_items))],
         ]))
-        story.append(lt); story.append(Spacer(1,8))
+        story.append(lt); story.append(Spacer(1,6))
 
-    # Overview box
+    # Session overview box
     story.append(Paragraph("Session Overview",SH_T))
-    story.append(HRFlowable(width="100%",thickness=0.8,color=TEAL,spaceAfter=5))
+    story.append(HRFlowable(width="100%",thickness=0.8,color=TEAL,spaceAfter=4))
     ob=Table([[Paragraph(report["overview"],BODY)]],colWidths=[W])
     ob.setStyle(TableStyle([
         ("BACKGROUND",(0,0),(-1,-1),TEAL_L),("BOX",(0,0),(-1,-1),0.8,TEAL),
-        ("TOPPADDING",(0,0),(-1,-1),12),("BOTTOMPADDING",(0,0),(-1,-1),12),
+        ("TOPPADDING",(0,0),(-1,-1),10),("BOTTOMPADDING",(0,0),(-1,-1),10),
         ("LEFTPADDING",(0,0),(-1,-1),14),("RIGHTPADDING",(0,0),(-1,-1),14),
     ]))
-    story.append(ob)
-    footer("Patient / Parent Copy")
+    story.append(ob); story.append(Spacer(1,6))
 
-    # ── PAGE 2 ────────────────────────────────────────────────────────────────
+    # Disclaimer
+    story.append(disclaimer_box())
+    footer("Patient Copy")
+
+    # ═══════════════════════════════════════════
+    # PAGE 2 — CLINICAL STAFF COPY
+    # ═══════════════════════════════════════════
     story.append(PageBreak())
     story.append(banner("CLINICAL STAFF",STEEL))
-    story.append(Spacer(1,4)); story.append(meta_strip()); story.append(Spacer(1,8))
-    story.append(Paragraph("Clinical Interpretation",SH))
-    story.append(HRFlowable(width="100%",thickness=0.8,color=STEEL,spaceAfter=6))
+    story.append(Spacer(1,4)); story.append(meta_strip()); story.append(Spacer(1,6))
 
-    sections=[
-        ("METRICS ANALYSIS",                    ICE2,  STEEL, False),
-        ("SIGNAL QUALITY & ACTIVATION PATTERN", WARM,  STEEL, False),
-        ("PROGRESS & RECOMMENDATIONS",          ICE2,  STEEL, False),
-        ("PHYSICIAN SUMMARY",                   TEAL_L,TEAL,  True),
+    # Disclaimer on staff page too
+    story.append(disclaimer_box()); story.append(Spacer(1,6))
+
+    story.append(Paragraph("Preliminary Signal Observations — For Dr. Hany Elhennawy's Review",SH))
+    story.append(HRFlowable(width="100%",thickness=0.8,color=STEEL,spaceAfter=5))
+
+    clinical_sections=[
+        ("METRICS OVERVIEW",      ICE2,  STEEL, False),
+        ("SIGNAL BEHAVIOUR",      WARM,  STEEL, False),
+        ("SESSION PATTERN NOTES", ICE2,  STEEL, False),
     ]
     remaining=report["clinical"]
-    for title,fill,bcol,is_sum in sections:
+    for title,fill,bcol,is_sum in clinical_sections:
         if title not in remaining: body_text=""
         else:
             parts=remaining.split(title,1); remaining=parts[1] if len(parts)>1 else ""
             nxt=len(remaining)
-            for o,_,_,_ in sections:
+            for o,_,_,_ in clinical_sections:
                 if o!=title and o in remaining:
                     idx=remaining.index(o)
                     if idx<nxt: nxt=idx
             body_text=remaining[:nxt].strip(); remaining=remaining[nxt:]
-        dtitle="🩺 Physician Summary" if is_sum else title.title()
-        lstyle=SECT if is_sum else SECLBL
-        lfill=HexColor("#D4EEF0") if is_sum else HexColor("#DDEEF9")
-        sec=Table([[Paragraph(dtitle,lstyle)],[Paragraph(body_text,BODY_S)]],colWidths=[W])
+        dtitle=title.title()
+        sec=Table([[Paragraph(dtitle,SECLBL)],[Paragraph(body_text,BODY_S)]],colWidths=[W])
         sec.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,-1),fill),("BACKGROUND",(0,0),(0,0),lfill),
+            ("BACKGROUND",(0,0),(-1,-1),fill),("BACKGROUND",(0,0),(0,0),HexColor("#DDEEF9")),
             ("BOX",(0,0),(-1,-1),0.6,bcol),("LINEBELOW",(0,0),(0,0),0.4,SILVER),
-            ("TOPPADDING",(0,0),(-1,-1),7),("BOTTOMPADDING",(0,0),(-1,-1),7),
+            ("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),
             ("LEFTPADDING",(0,0),(-1,-1),10),("RIGHTPADDING",(0,0),(-1,-1),10),
             ("VALIGN",(0,0),(-1,-1),"TOP"),
         ]))
-        story.append(sec); story.append(Spacer(1,5))
+        story.append(sec); story.append(Spacer(1,4))
 
-    # Trend table grouped by mode
     story.append(Spacer(1,4))
+
+    # Trend table
     story.append(Paragraph("Metrics Trend Summary — by Mode",SH))
-    story.append(HRFlowable(width="100%",thickness=0.8,color=STEEL,spaceAfter=5))
+    story.append(HRFlowable(width="100%",thickness=0.8,color=STEEL,spaceAfter=4))
 
     def get_trend(key,mfilter=None):
         src=sessions if not mfilter else [s for s in sessions if s.get("mode")==mfilter]
@@ -404,18 +436,16 @@ def build_pdf(patient_name, sessions, report):
     if nf: mconfigs.append(("flexibility","⇅ Flexibility",
                              [("Mean HEG","mean"),("Range","range"),
                               ("% Correct","percent_correct"),("Points","points")]))
-    row_idx=0
     for mk,mn,metrics in mconfigs:
         for lbl,key in metrics:
             f2,l2,arr=get_trend(key,mk); col=tcol(arr,key)
             trows.append([
-                Paragraph(lbl, TS("tl",fontName="Helvetica-Bold",fontSize=7.5,textColor=NAVY,leading=9)),
+                Paragraph(lbl, TS("tl",fontName="Helvetica-Bold",fontSize=7.5,textColor=NAVY,  leading=9)),
                 Paragraph(mn,  TS("tm",fontName="Helvetica",      fontSize=7.5,textColor=TEXT_M,leading=9,alignment=TA_CENTER)),
                 Paragraph(f2,  TS("tv",fontName="Helvetica",      fontSize=7.5,textColor=TEXT_M,leading=9,alignment=TA_CENTER)),
                 Paragraph(l2,  TS("tv2",fontName="Helvetica",     fontSize=7.5,textColor=TEXT_M,leading=9,alignment=TA_CENTER)),
                 Paragraph(arr, TS("ta",fontName="Helvetica-Bold", fontSize=7.5,textColor=col,   leading=9,alignment=TA_CENTER)),
             ])
-            row_idx+=1
     tt=Table(trows,colWidths=tw2)
     alt3=[("BACKGROUND",(0,r),(-1,r),WARM if r%2==0 else ICE2) for r in range(1,len(trows))]
     tt.setStyle(TableStyle([
@@ -426,7 +456,8 @@ def build_pdf(patient_name, sessions, report):
         ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
     ]))
     story.append(tt)
-    footer("Clinical Staff Copy — Confidential")
+    footer("Clinical Staff Copy — For Dr. Hany Elhennawy's Review")
+
     doc.build(story); buf.seek(0); return buf
 
 # ── UI ───────────────────────────────────────────────────────────────────────
@@ -446,7 +477,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 st.markdown("""<div class="hero-banner"><h1>🧠 nIR HEG Session Tracker</h1>
-<p>Dr. Hany Elhennawy Psychiatric Center — Upload ZIP · Parse sessions · Generate clinical reports</p>
+<p>Dr. Hany Elhennawy Psychiatric Center — Upload ZIP · Parse sessions · Generate reports</p>
 </div>""",unsafe_allow_html=True)
 
 with st.sidebar:
@@ -497,7 +528,8 @@ with tab1:
                         for i,s in enumerate(parsed,1):
                             t2=s.get("total",{}); pct=t2.get("percent_correct",0) or 0
                             tag="good" if pct>=60 else ("warn" if pct>=40 else "alert")
-                            sym=s.get("mode_symbol","∧"); mode_css={"concentration":"conc","relaxation":"relax","flexibility":"flex"}.get(s.get("mode",""),"conc")
+                            sym=s.get("mode_symbol","∧")
+                            mode_css={"concentration":"conc","relaxation":"relax","flexibility":"flex"}.get(s.get("mode",""),"conc")
                             st.markdown(
                                 f"**#{i}** · {s.get('date','?')} · "
                                 f'<span class="tag-{mode_css}">{sym} {s.get("mode_label","?")}</span> · '
@@ -545,17 +577,17 @@ with tab2:
                                           ("Thresh Max","threshold_max"),("Difficulty","difficulty")]):
                 arr,last=trend(key); col.metric(lbl,arr,f"Last: {last}")
         st.divider()
-        st.markdown("### Generate Clinical Report")
-        st.caption("2-page PDF — Page 1 (parent): session table with mode + difficulty + overview · Page 2 (staff): mode-aware clinical interpretation + trend summary by mode")
+        st.markdown("### Generate Report")
+        st.caption("2-page PDF — Page 1 (patient copy) · Page 2 (clinical staff copy for Dr. Hany's review)")
         if st.button("📋 Generate Report",type="primary"):
-            with st.spinner("Generating mode-aware report..."):
+            with st.spinner("Generating report..."):
                 try:
                     rep=generate_report(patient,sessions)
                     pdf=build_pdf(patient,sessions,rep)
                     st.success("✅ Report ready!")
                     with st.expander("Preview content"):
-                        st.markdown("**Page 1 — Overview (Parent):**"); st.text(rep["overview"])
-                        st.markdown("**Page 2 — Clinical (Staff):**"); st.text(rep["clinical"])
+                        st.markdown("**Page 1 — Patient Copy:**"); st.text(rep["overview"])
+                        st.markdown("**Page 2 — Clinical Staff:**"); st.text(rep["clinical"])
                     fname=f"HEG_Report_{patient.replace(' ','_')}_{datetime.now().strftime('%Y%m%d')}.pdf"
-                    st.download_button("⬇️ Download 2-Page PDF Report",data=pdf,file_name=fname,mime="application/pdf")
+                    st.download_button("⬇️ Download Report",data=pdf,file_name=fname,mime="application/pdf")
                 except Exception as e: st.error(f"Error: {e}")
