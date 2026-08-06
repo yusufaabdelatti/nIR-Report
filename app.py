@@ -328,7 +328,7 @@ def build_pdf(patient_name, sessions, report):
         return t
 
     def meta_strip():
-        mc=[1.5*cm,4.0*cm,1.7*cm,1.5*cm,1.8*cm,W-10.5*cm]
+        mc=[1.5*cm,4.0*cm,2.0*cm,1.2*cm,1.8*cm,W-10.5*cm]
         t=Table([[Paragraph("Patient:",META_B),Paragraph(patient_name,META),
                   Paragraph("Sessions:",META_B),Paragraph(str(len(sessions)),META),
                   Paragraph("Date:",META_B),Paragraph(datetime.now().strftime("%d.%m.%Y"),META)]],
