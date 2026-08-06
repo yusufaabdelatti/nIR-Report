@@ -34,7 +34,7 @@ st.markdown("""
   div[data-testid="stButton"] > button { border-radius:8px; font-weight:600; }
 </style>""", unsafe_allow_html=True)
 
-for k, v in [("authenticated",False),("patients",{}),("active_patient",None)]:
+for k, v in [("authenticated",False),("patients",{}),("active_patient",None),("last_import_report",None)]:
     if k not in st.session_state: st.session_state[k] = v
 
 def get_groq(): return Groq(api_key=st.secrets["GROQ_API_KEY"])
@@ -600,6 +600,19 @@ with tab1:
     st.caption("Select every session zip Body & Mind exported (one zip per session is fine — "
                "no need to extract or recompress). Old-style zips with multiple sessions inside "
                "still work too.")
+
+    lr=st.session_state.last_import_report
+    if lr and lr["patient"]==patient:
+        for fname,status,msg in lr["file_report"]:
+            icon={"ok":"✅","warn":"⚠️","error":"❌"}[status]
+            st.markdown(f"{icon} **{fname}** — {msg}")
+        if lr["found"]:
+            msg=f"✅ {lr['added']} new session{'s' if lr['added']!=1 else ''} imported"
+            if lr["skipped_dupes"]: msg+=f" ({lr['skipped_dupes']} duplicate session(s) already on file, updated)"
+            st.success(msg+f" — {lr['total']} total for {patient}. See the Sessions & Report tab.")
+        else:
+            st.error("No session-data CSVs found in the uploaded file(s).")
+
     uploaded=st.file_uploader("Choose ZIP file(s)",type=["zip"],accept_multiple_files=True,
                                label_visibility="collapsed")
     if uploaded:
@@ -609,39 +622,22 @@ with tab1:
             with st.spinner("Parsing sessions..."):
                 try:
                     parsed,report=parse_uploaded_zip_files(uploaded)
-
-                    for fname,status,msg in report:
-                        icon={"ok":"✅","warn":"⚠️","error":"❌"}[status]
-                        st.markdown(f"{icon} **{fname}** — {msg}")
-
-                    if not parsed:
-                        st.error("No session-data CSVs found in the uploaded file(s).")
-                    else:
-                        existing=sessions
-                        by_key={(s.get("date"),s.get("time")):s for s in existing}
-                        added=0
-                        for s in parsed:
-                            key=(s.get("date"),s.get("time"))
-                            if key not in by_key: added+=1
-                            by_key[key]=s
-                        combined=sorted(by_key.values(),
-                                         key=lambda s: (s.get("sort_key") is None, s.get("sort_key") or 0))
-                        st.session_state.patients[patient]=combined
-                        skipped_dupes=len(parsed)-added
-                        msg=f"✅ {added} new session{'s' if added!=1 else ''} imported"
-                        if skipped_dupes: msg+=f" ({skipped_dupes} duplicate session(s) already on file, updated)"
-                        st.success(msg+f" — {len(combined)} total for {patient}.")
-                        for i,s in enumerate(combined,1):
-                            t2=s.get("total",{}); pct=t2.get("percent_correct",0) or 0
-                            tag="good" if pct>=60 else ("warn" if pct>=40 else "alert")
-                            sym=s.get("mode_symbol","∧")
-                            mode_css={"concentration":"conc","relaxation":"relax","flexibility":"flex"}.get(s.get("mode",""),"conc")
-                            st.markdown(
-                                f"**#{i}** · {s.get('date','?')} · "
-                                f'<span class="tag-{mode_css}">{sym} {s.get("mode_label","?")}</span> · '
-                                f"{s.get('duration','?').strip()} · Mean: **{t2.get('mean','?')}** · "
-                                f'<span class="tag-{tag}">{pct}% correct</span> · '
-                                f"Points: **{t2.get('points','?')}**",unsafe_allow_html=True)
+                    existing=sessions
+                    by_key={(s.get("date"),s.get("time")):s for s in existing}
+                    added=0
+                    for s in parsed:
+                        key=(s.get("date"),s.get("time"))
+                        if key not in by_key: added+=1
+                        by_key[key]=s
+                    combined=sorted(by_key.values(),
+                                     key=lambda s: (s.get("sort_key") is None, s.get("sort_key") or 0))
+                    st.session_state.patients[patient]=combined
+                    st.session_state.last_import_report={
+                        "patient": patient, "file_report": report,
+                        "added": added, "skipped_dupes": len(parsed)-added,
+                        "total": len(combined), "found": len(parsed)>0,
+                    }
+                    st.rerun()
                 except Exception as e: st.error(f"Error: {e}")
     st.markdown('</div>',unsafe_allow_html=True)
 
