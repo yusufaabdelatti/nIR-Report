@@ -606,9 +606,12 @@ with tab1:
         for fname,status,msg in lr["file_report"]:
             icon={"ok":"✅","warn":"⚠️","error":"❌"}[status]
             st.markdown(f"{icon} **{fname}** — {msg}")
+        for note in lr.get("dup_notes",[]):
+            st.markdown(note)
         if lr["found"]:
             msg=f"✅ {lr['added']} new session{'s' if lr['added']!=1 else ''} imported"
-            if lr["skipped_dupes"]: msg+=f" ({lr['skipped_dupes']} duplicate session(s) already on file, updated)"
+            if lr["skipped_dupes"]:
+                msg+=f" · ⚠️ {lr['skipped_dupes']} duplicate{'s' if lr['skipped_dupes']!=1 else ''} detected (see above)"
             st.success(msg+f" — {lr['total']} total for {patient}. See the Sessions & Report tab.")
         else:
             st.error("No session-data CSVs found in the uploaded file(s).")
@@ -623,18 +626,33 @@ with tab1:
                 try:
                     parsed,report=parse_uploaded_zip_files(uploaded)
                     existing=sessions
+                    existing_keys={(s.get("date"),s.get("time")) for s in existing}
                     by_key={(s.get("date"),s.get("time")):s for s in existing}
-                    added=0
+                    added,dup_notes,seen_this_batch=0,[],{}
+                    # De-dupe by the session's own recorded date+time (parsed from inside
+                    # the CSV), not by zip/file name — catches the same session re-uploaded
+                    # under a different zip name.
                     for s in parsed:
                         key=(s.get("date"),s.get("time"))
-                        if key not in by_key: added+=1
+                        src=f"{s.get('source_zip','?')} → {s.get('filename','?')}"
+                        if key in existing_keys:
+                            dup_notes.append(
+                                f"⚠️ **{src}** — duplicate of a session already imported for "
+                                f"{patient} ({s.get('date','?')} {s.get('time','?')}). Kept the newest copy.")
+                        elif key in seen_this_batch:
+                            dup_notes.append(
+                                f"⚠️ **{src}** — same session ({s.get('date','?')} {s.get('time','?')}) as "
+                                f"**{seen_this_batch[key]}** in this upload. Kept the newest copy.")
+                        else:
+                            added+=1
+                        seen_this_batch[key]=src
                         by_key[key]=s
                     combined=sorted(by_key.values(),
                                      key=lambda s: (s.get("sort_key") is None, s.get("sort_key") or 0))
                     st.session_state.patients[patient]=combined
                     st.session_state.last_import_report={
-                        "patient": patient, "file_report": report,
-                        "added": added, "skipped_dupes": len(parsed)-added,
+                        "patient": patient, "file_report": report, "dup_notes": dup_notes,
+                        "added": added, "skipped_dupes": len(dup_notes),
                         "total": len(combined), "found": len(parsed)>0,
                     }
                     st.rerun()
