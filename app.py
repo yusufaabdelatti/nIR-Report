@@ -40,21 +40,34 @@ for k, v in [("authenticated",False),("patients",{}),("active_patient",None)]:
 def get_groq(): return Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 # ── CSV parser ──────────────────────────────────────────────────────────────
+# Handles both the current Body & Mind export format:
+#   [Metadata]              Key;Value lines
+#   [Statistics][HEG]       header row then ;-delimited rows, "..." = same as row above
+# and the older combined-zip format (Key=;Value lines, "[Statistics HEG-Ratio]" section),
+# which used the same downstream field names so only the section/line parsing differs.
 def parse_csv(content):
-    meta, stats_rows, in_stats, headers = {}, [], False, []
+    meta, stats_rows, headers, section, prev_parts = {}, [], [], None, None
     for line in content.splitlines():
         line = line.strip()
         if not line: continue
-        if line.startswith("[Statistics HEG-Ratio]"): in_stats=True; continue
-        if line.startswith("[") and in_stats: in_stats=False; continue
-        if not in_stats:
-            if "=" in line and not line.startswith("["):
-                p = line.split(";",2)
-                if len(p)>=2: meta[p[0].replace("=","").strip()] = p[1].strip()
-        else:
+        if line.startswith("["):
+            lowered = line.lower()
+            if "statistics" in lowered: section="stats"; headers=[]; prev_parts=None
+            elif "metadata"  in lowered: section="meta"
+            else: section=None
+            continue
+        if section=="meta":
+            p = line.split(";")
+            if len(p)>=2:
+                key = p[0].strip().rstrip("=").strip()
+                if key: meta[key] = p[1].strip()
+        elif section=="stats":
             p = [x.strip() for x in line.split(";")]
-            if not headers: headers=p
-            elif len(p)>=len(headers): stats_rows.append(dict(zip(headers,p)))
+            if not headers: headers=p; continue
+            if len(p)<len(headers): continue
+            if prev_parts: p = [(pv if v=="..." else v) for v,pv in zip(p,prev_parts)]
+            prev_parts = p
+            stats_rows.append(dict(zip(headers,p)))
 
     def flt(v):
         try: return round(float(v),2)
@@ -77,9 +90,11 @@ def parse_csv(content):
             "threshold_min": flt(r.get("ThresholdMin")),
         })
 
-    states    = [r["state"] for r in rows]
-    has_conc  = any("concentration" in s and "total" not in s for s in states)
-    has_relax = any("relaxation"    in s and "total" not in s for s in states)
+    # A state only counts as "used" if it actually has data — Body & Mind now
+    # includes a zeroed/placeholder row (points=0) for whichever mode wasn't run.
+    def active(r): return "total" not in r["state"] and (r.get("points") or 0) > 0
+    has_conc  = any("concentration" in r["state"] and active(r) for r in rows)
+    has_relax = any("relaxation"    in r["state"] and active(r) for r in rows)
     if has_conc and has_relax:
         mode,sym,label = "flexibility","⇅","Flexibility"
     elif has_relax:
@@ -87,25 +102,33 @@ def parse_csv(content):
     else:
         mode,sym,label = "concentration","∧","Concentration"
 
-    total     = next((r for r in rows if r["state"]=="total"), rows[-1] if rows else {})
-    conc_row  = next((r for r in rows if "concentration" in r["state"] and "total" in r["state"]), None)
-    relax_row = next((r for r in rows if "relaxation"    in r["state"] and "total" in r["state"]), None)
+    total = next((r for r in rows if r["state"]=="total"), rows[-1] if rows else {})
+    conc_candidates  = [r for r in rows if "concentration" in r["state"] and r["state"]!="total"]
+    relax_candidates = [r for r in rows if "relaxation"    in r["state"] and r["state"]!="total"]
+    conc_row  = conc_candidates[-1]  if conc_candidates  else None
+    relax_row = relax_candidates[-1] if relax_candidates else None
 
     raw_date = meta.get("MeasurementDate","").strip()
-    raw_time = meta.get("MeasurementTime","").strip()
+    raw_time = meta.get("MeasurementTime","").strip().split(",")[0]
     sort_key = None
-    for fmt in ("%d.%m.%Y %H:%M:%S","%d.%m.%Y %H:%M"):
+    for fmt in ("%Y.%m.%d %H:%M:%S","%d.%m.%Y %H:%M:%S","%Y.%m.%d %H:%M","%d.%m.%Y %H:%M"):
         try: sort_key = datetime.strptime(f"{raw_date} {raw_time}", fmt); break
         except ValueError: pass
     if sort_key is None:
-        try: sort_key = datetime.strptime(raw_date, "%d.%m.%Y")
-        except ValueError: sort_key = None
+        for fmt in ("%Y.%m.%d","%d.%m.%Y"):
+            try: sort_key = datetime.strptime(raw_date, fmt); break
+            except ValueError: pass
+
+    date_display = raw_date.replace(".","/")
+    for fmt in ("%Y.%m.%d","%d.%m.%Y"):
+        try: date_display = datetime.strptime(raw_date, fmt).strftime("%d/%m/%Y"); break
+        except ValueError: pass
 
     return {
         "patient_name": meta.get("Client","Unknown").strip(),
-        "date":         meta.get("MeasurementDate","").replace(".","/"),
-        "time":         meta.get("MeasurementTime","").rsplit(":",1)[0],
-        "duration":     meta.get("TotalDuration","").strip(),
+        "date":         date_display,
+        "time":         raw_time[:5] if len(raw_time)>=5 else raw_time,
+        "duration":     meta.get("TotalDuration","").split(",")[0].strip(),
         "rows": rows, "total": total,
         "mode": mode, "mode_symbol": sym, "mode_label": label,
         "conc_row": conc_row, "relax_row": relax_row,
@@ -116,9 +139,10 @@ def _looks_like_rar(data):
     return data[:4] == b"Rar!"
 
 def extract_sessions_from_zip_bytes(zip_bytes, path_prefix=""):
-    """Recursively pull target session-data CSVs (the ones with a
-    [Statistics HEG-Ratio] block) out of a zip and any zips nested inside it.
-    Non-target files (PDF, raw HEG-data CSV) are skipped, not errored."""
+    """Recursively pull target session-data CSVs out of a zip and any zips
+    nested inside it. A CSV is the target file if parse_csv finds an actual
+    statistics table in it — this is how a PDF and the raw per-sample
+    HEG-data CSV (same session, no [Statistics] block) get skipped."""
     sessions, skipped = [], []
     with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
         for fname in sorted(zf.namelist()):
@@ -132,11 +156,12 @@ def extract_sessions_from_zip_bytes(zip_bytes, path_prefix=""):
                     skipped.append(f"{full} (not a valid nested zip)")
             elif fname.lower().endswith(".csv"):
                 raw = zf.read(fname).decode("utf-8", errors="replace")
-                if "[statistics heg-ratio]" in raw.lower():
-                    try:
-                        p = parse_csv(raw); p["filename"] = full; sessions.append(p)
-                    except Exception as e:
-                        skipped.append(f"{full} (parse error: {e})")
+                try:
+                    p = parse_csv(raw)
+                except Exception as e:
+                    skipped.append(f"{full} (parse error: {e})"); continue
+                if p.get("rows"):
+                    p["filename"] = full; sessions.append(p)
                 else:
                     skipped.append(f"{full} (not session-data — skipped)")
     return sessions, skipped

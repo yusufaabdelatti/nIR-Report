@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+
+# Sample/patient session exports — never commit real client data
+*.zip
+*.csv
