@@ -91,6 +91,16 @@ def parse_csv(content):
     conc_row  = next((r for r in rows if "concentration" in r["state"] and "total" in r["state"]), None)
     relax_row = next((r for r in rows if "relaxation"    in r["state"] and "total" in r["state"]), None)
 
+    raw_date = meta.get("MeasurementDate","").strip()
+    raw_time = meta.get("MeasurementTime","").strip()
+    sort_key = None
+    for fmt in ("%d.%m.%Y %H:%M:%S","%d.%m.%Y %H:%M"):
+        try: sort_key = datetime.strptime(f"{raw_date} {raw_time}", fmt); break
+        except ValueError: pass
+    if sort_key is None:
+        try: sort_key = datetime.strptime(raw_date, "%d.%m.%Y")
+        except ValueError: sort_key = None
+
     return {
         "patient_name": meta.get("Client","Unknown").strip(),
         "date":         meta.get("MeasurementDate","").replace(".","/"),
@@ -99,17 +109,66 @@ def parse_csv(content):
         "rows": rows, "total": total,
         "mode": mode, "mode_symbol": sym, "mode_label": label,
         "conc_row": conc_row, "relax_row": relax_row,
+        "sort_key": sort_key,
     }
 
-def parse_zip(zip_bytes):
-    sessions = []
+def _looks_like_rar(data):
+    return data[:4] == b"Rar!"
+
+def extract_sessions_from_zip_bytes(zip_bytes, path_prefix=""):
+    """Recursively pull target session-data CSVs (the ones with a
+    [Statistics HEG-Ratio] block) out of a zip and any zips nested inside it.
+    Non-target files (PDF, raw HEG-data CSV) are skipped, not errored."""
+    sessions, skipped = [], []
     with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
-        for fname in sorted(f for f in zf.namelist() if f.lower().endswith(".csv")):
-            try:
-                raw = zf.read(fname).decode("utf-8",errors="replace")
-                p = parse_csv(raw); p["filename"]=fname; sessions.append(p)
-            except Exception as e: st.warning(f"Could not parse {fname}: {e}")
-    return sessions
+        for fname in sorted(zf.namelist()):
+            full = f"{path_prefix}{fname}"
+            if fname.lower().endswith(".zip"):
+                try:
+                    sub_sessions, sub_skipped = extract_sessions_from_zip_bytes(
+                        zf.read(fname), path_prefix=f"{full}/")
+                    sessions.extend(sub_sessions); skipped.extend(sub_skipped)
+                except zipfile.BadZipFile:
+                    skipped.append(f"{full} (not a valid nested zip)")
+            elif fname.lower().endswith(".csv"):
+                raw = zf.read(fname).decode("utf-8", errors="replace")
+                if "[statistics heg-ratio]" in raw.lower():
+                    try:
+                        p = parse_csv(raw); p["filename"] = full; sessions.append(p)
+                    except Exception as e:
+                        skipped.append(f"{full} (parse error: {e})")
+                else:
+                    skipped.append(f"{full} (not session-data — skipped)")
+    return sessions, skipped
+
+def parse_uploaded_zip_files(uploaded_files):
+    """Accepts a list of uploaded zip files — each may be an old-style
+    multi-session zip or a new-style single-session export (csv+pdf+heg-data) —
+    and returns (all_sessions, per_file_report)."""
+    all_sessions, report = [], []
+    for uf in uploaded_files:
+        data = uf.getvalue()
+        if not data.startswith(b"PK"):
+            if _looks_like_rar(data):
+                report.append((uf.name, "error",
+                    "This is a RAR archive renamed to .zip — please re-compress it as a real ZIP file."))
+            else:
+                report.append((uf.name, "error", "Not a valid ZIP file."))
+            continue
+        try:
+            sessions, skipped = extract_sessions_from_zip_bytes(data)
+        except zipfile.BadZipFile:
+            report.append((uf.name, "error", "Could not open as a ZIP archive."))
+            continue
+        for s in sessions: s["source_zip"] = uf.name
+        all_sessions.extend(sessions)
+        if sessions:
+            msg = f"{len(sessions)} session(s) found"
+            if skipped: msg += f", {len(skipped)} file(s) skipped"
+            report.append((uf.name, "ok", msg))
+        else:
+            report.append((uf.name, "warn", "No session-data CSV found in this zip."))
+    return all_sessions, report
 
 # ── Groq ────────────────────────────────────────────────────────────────────
 def generate_report(patient_name, sessions):
@@ -512,20 +571,42 @@ st.caption(f"{len(sessions)} session{'s' if len(sessions)!=1 else ''} recorded")
 tab1,tab2=st.tabs(["📥 Upload ZIP","📊 Sessions & Report"])
 
 with tab1:
-    st.markdown('<div class="card"><h3>📦 Upload Session ZIP File</h3>',unsafe_allow_html=True)
-    st.caption("Export the results ZIP from the Body & Mind app (via email) and upload here.")
-    uploaded=st.file_uploader("Choose ZIP file",type=["zip"],label_visibility="collapsed")
+    st.markdown('<div class="card"><h3>📦 Upload Session ZIP File(s)</h3>',unsafe_allow_html=True)
+    st.caption("Select every session zip Body & Mind exported (one zip per session is fine — "
+               "no need to extract or recompress). Old-style zips with multiple sessions inside "
+               "still work too.")
+    uploaded=st.file_uploader("Choose ZIP file(s)",type=["zip"],accept_multiple_files=True,
+                               label_visibility="collapsed")
     if uploaded:
-        st.info(f"**{uploaded.name}** · {uploaded.size/1024:.1f} KB")
+        st.info(f"**{len(uploaded)} file(s) selected** · "
+                f"{sum(u.size for u in uploaded)/1024:.1f} KB total")
         if st.button("📂 Parse & Import All Sessions",type="primary"):
             with st.spinner("Parsing sessions..."):
                 try:
-                    parsed=parse_zip(uploaded.read())
-                    if not parsed: st.error("No valid CSV files found.")
+                    parsed,report=parse_uploaded_zip_files(uploaded)
+
+                    for fname,status,msg in report:
+                        icon={"ok":"✅","warn":"⚠️","error":"❌"}[status]
+                        st.markdown(f"{icon} **{fname}** — {msg}")
+
+                    if not parsed:
+                        st.error("No session-data CSVs found in the uploaded file(s).")
                     else:
-                        st.session_state.patients[patient]=parsed
-                        st.success(f"✅ {len(parsed)} session{'s' if len(parsed)!=1 else ''} imported!")
-                        for i,s in enumerate(parsed,1):
+                        existing=sessions
+                        by_key={(s.get("date"),s.get("time")):s for s in existing}
+                        added=0
+                        for s in parsed:
+                            key=(s.get("date"),s.get("time"))
+                            if key not in by_key: added+=1
+                            by_key[key]=s
+                        combined=sorted(by_key.values(),
+                                         key=lambda s: (s.get("sort_key") is None, s.get("sort_key") or 0))
+                        st.session_state.patients[patient]=combined
+                        skipped_dupes=len(parsed)-added
+                        msg=f"✅ {added} new session{'s' if added!=1 else ''} imported"
+                        if skipped_dupes: msg+=f" ({skipped_dupes} duplicate session(s) already on file, updated)"
+                        st.success(msg+f" — {len(combined)} total for {patient}.")
+                        for i,s in enumerate(combined,1):
                             t2=s.get("total",{}); pct=t2.get("percent_correct",0) or 0
                             tag="good" if pct>=60 else ("warn" if pct>=40 else "alert")
                             sym=s.get("mode_symbol","∧")
@@ -536,7 +617,6 @@ with tab1:
                                 f"{s.get('duration','?').strip()} · Mean: **{t2.get('mean','?')}** · "
                                 f'<span class="tag-{tag}">{pct}% correct</span> · '
                                 f"Points: **{t2.get('points','?')}**",unsafe_allow_html=True)
-                        st.rerun()
                 except Exception as e: st.error(f"Error: {e}")
     st.markdown('</div>',unsafe_allow_html=True)
 
