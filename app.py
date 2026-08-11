@@ -124,6 +124,10 @@ def parse_csv(content):
         try: date_display = datetime.strptime(raw_date, fmt).strftime("%d/%m/%Y"); break
         except ValueError: pass
 
+    # Full-precision (seconds) identity for duplicate detection — the display
+    # "time" field below is truncated to HH:MM and must never be used for this.
+    dedupe_key = sort_key.isoformat() if sort_key else f"{raw_date}|{raw_time}"
+
     return {
         "patient_name": meta.get("Client","Unknown").strip(),
         "date":         date_display,
@@ -132,7 +136,7 @@ def parse_csv(content):
         "rows": rows, "total": total,
         "mode": mode, "mode_symbol": sym, "mode_label": label,
         "conc_row": conc_row, "relax_row": relax_row,
-        "sort_key": sort_key,
+        "sort_key": sort_key, "dedupe_key": dedupe_key,
     }
 
 def _looks_like_rar(data):
@@ -626,14 +630,15 @@ with tab1:
                 try:
                     parsed,report=parse_uploaded_zip_files(uploaded)
                     existing=sessions
-                    existing_keys={(s.get("date"),s.get("time")) for s in existing}
-                    by_key={(s.get("date"),s.get("time")):s for s in existing}
+                    existing_keys={s.get("dedupe_key") for s in existing}
+                    by_key={s.get("dedupe_key"):s for s in existing}
                     added,dup_notes,seen_this_batch=0,[],{}
-                    # De-dupe by the session's own recorded date+time (parsed from inside
-                    # the CSV), not by zip/file name — catches the same session re-uploaded
-                    # under a different zip name.
+                    # De-dupe by the session's own recorded date+time, to the second
+                    # (parsed from inside the CSV), not by zip/file name — catches the
+                    # same session re-uploaded under a different zip name, while not
+                    # confusing same-day sessions recorded at different times.
                     for s in parsed:
-                        key=(s.get("date"),s.get("time"))
+                        key=s.get("dedupe_key")
                         src=f"{s.get('source_zip','?')} → {s.get('filename','?')}"
                         if key in existing_keys:
                             dup_notes.append(
