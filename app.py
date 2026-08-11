@@ -142,6 +142,19 @@ def parse_csv(content):
 def _looks_like_rar(data):
     return data[:4] == b"Rar!"
 
+_FNAME_TS_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})")
+
+def _timestamp_from_filename(name):
+    """Body & Mind export filenames embed the exact session timestamp, e.g.
+    '..._2026-08-05_13-55-10_00h25m01s_HEG.csv'. Used as a fallback when the
+    CSV's own [Metadata] block fails to yield a usable time, so two same-day
+    sessions never collapse onto the same (time-less) dedupe key."""
+    m = _FNAME_TS_RE.search(name)
+    if not m: return None
+    y,mo,d,h,mi,se = map(int, m.groups())
+    try: return datetime(y,mo,d,h,mi,se)
+    except ValueError: return None
+
 def extract_sessions_from_zip_bytes(zip_bytes, path_prefix=""):
     """Recursively pull target session-data CSVs out of a zip and any zips
     nested inside it. A CSV is the target file if parse_csv finds an actual
@@ -165,6 +178,13 @@ def extract_sessions_from_zip_bytes(zip_bytes, path_prefix=""):
                 except Exception as e:
                     skipped.append(f"{full} (parse error: {e})"); continue
                 if p.get("rows"):
+                    if not p.get("time"):
+                        fname_dt = _timestamp_from_filename(fname)
+                        if fname_dt:
+                            p["time"] = fname_dt.strftime("%H:%M")
+                            if not p.get("date"): p["date"] = fname_dt.strftime("%d/%m/%Y")
+                            p["sort_key"] = fname_dt
+                            p["dedupe_key"] = fname_dt.isoformat()
                     p["filename"] = full; sessions.append(p)
                 else:
                     skipped.append(f"{full} (not session-data — skipped)")
