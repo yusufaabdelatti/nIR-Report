@@ -142,18 +142,22 @@ def parse_csv(content):
 def _looks_like_rar(data):
     return data[:4] == b"Rar!"
 
-_FNAME_TS_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})")
+_FNAME_META_RE = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})(?:_(\d{2})h(\d{2})m(\d{2})s)?")
 
-def _timestamp_from_filename(name):
-    """Body & Mind export filenames embed the exact session timestamp, e.g.
-    '..._2026-08-05_13-55-10_00h25m01s_HEG.csv'. Used as a fallback when the
-    CSV's own [Metadata] block fails to yield a usable time, so two same-day
-    sessions never collapse onto the same (time-less) dedupe key."""
-    m = _FNAME_TS_RE.search(name)
+def _parse_filename_metadata(name):
+    """Body & Mind export filenames embed the session start timestamp and,
+    in the '00h25m01s' segment, its total duration, e.g.
+    '..._2026-08-05_13-55-10_00h25m01s_HEG.csv'. Used as a fallback whenever
+    the CSV's own [Metadata] block fails to yield a usable MeasurementTime
+    or TotalDuration for a given export — this happens for some real files."""
+    m = _FNAME_META_RE.search(name)
     if not m: return None
-    y,mo,d,h,mi,se = map(int, m.groups())
-    try: return datetime(y,mo,d,h,mi,se)
+    y,mo,d,h,mi,se = map(int, m.groups()[:6])
+    try: ts = datetime(y,mo,d,h,mi,se)
     except ValueError: return None
+    duration = f"{m.group(7)}:{m.group(8)}:{m.group(9)}" if m.group(7) else None
+    return {"timestamp": ts, "duration": duration}
 
 def extract_sessions_from_zip_bytes(zip_bytes, path_prefix=""):
     """Recursively pull target session-data CSVs out of a zip and any zips
@@ -178,13 +182,17 @@ def extract_sessions_from_zip_bytes(zip_bytes, path_prefix=""):
                 except Exception as e:
                     skipped.append(f"{full} (parse error: {e})"); continue
                 if p.get("rows"):
-                    if not p.get("time"):
-                        fname_dt = _timestamp_from_filename(fname)
-                        if fname_dt:
-                            p["time"] = fname_dt.strftime("%H:%M")
-                            if not p.get("date"): p["date"] = fname_dt.strftime("%d/%m/%Y")
-                            p["sort_key"] = fname_dt
-                            p["dedupe_key"] = fname_dt.isoformat()
+                    if not p.get("time") or not p.get("duration"):
+                        fm = _parse_filename_metadata(fname)
+                        if fm:
+                            if not p.get("time"):
+                                ts = fm["timestamp"]
+                                p["time"] = ts.strftime("%H:%M")
+                                if not p.get("date"): p["date"] = ts.strftime("%d/%m/%Y")
+                                p["sort_key"] = ts
+                                p["dedupe_key"] = ts.isoformat()
+                            if not p.get("duration") and fm["duration"]:
+                                p["duration"] = fm["duration"]
                     p["filename"] = full; sessions.append(p)
                 else:
                     skipped.append(f"{full} (not session-data — skipped)")
