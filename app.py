@@ -264,8 +264,9 @@ First 1-2 sentences: briefly explain in plain language what the training mode(s)
 Remaining sentences: state only facts — total sessions, date range, session durations, mode(s) used (use plain words: focus training / relaxation training / flexibility training), and difficulty level used.
 Do NOT evaluate results, do NOT mention absent modes, do NOT use words like improving/better/progress/declining."""
 
-    r1 = client.chat.completions.create(model="llama-3.3-70b-versatile",
-        messages=[{"role":"user","content":p1}], max_tokens=320, temperature=0.3)
+    r1 = client.chat.completions.create(model="openai/gpt-oss-120b",
+        messages=[{"role":"user","content":p1}], max_completion_tokens=600,
+        temperature=0.3, reasoning_effort="low")
     overview = re.sub(r'^SESSION OVERVIEW\s*\n?','',
                       r1.choices[0].message.content.strip(), flags=re.IGNORECASE).strip()
 
@@ -295,8 +296,9 @@ Describe the pattern of the HEG signal across sessions — how Mean, Range, and 
 SESSION PATTERN NOTES
 Describe the overall pattern of the recorded sessions — difficulty levels used, session durations, and how the key metrics moved across the training block. Present as a factual description of what the data shows, for Dr. Hany's clinical review."""
 
-    r2 = client.chat.completions.create(model="llama-3.3-70b-versatile",
-        messages=[{"role":"user","content":p2}], max_tokens=600, temperature=0.25)
+    r2 = client.chat.completions.create(model="openai/gpt-oss-120b",
+        messages=[{"role":"user","content":p2}], max_completion_tokens=1100,
+        temperature=0.25, reasoning_effort="low")
 
     return {
         "overview": overview,
