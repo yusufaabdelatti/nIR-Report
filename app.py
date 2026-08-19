@@ -698,9 +698,10 @@ with tab2:
     if not sessions: st.info("No sessions yet. Upload a ZIP in the Upload tab.")
     else:
         st.markdown("### Session Log")
-        cols_h=st.columns([0.4,1.1,1.3,0.65,1.3,0.85,0.85,0.85,0.85,0.95,1.0,1.0,0.75])
+        st.caption("Remove a session with 🗑️ if it shouldn't be in this patient's report.")
+        cols_h=st.columns([0.4,1.1,1.3,0.65,1.3,0.85,0.85,0.85,0.85,0.95,1.0,1.0,0.75,0.5])
         for col,h in zip(cols_h,["#","Date","Duration","Mode","Difficulty","Mean","Max","Min",
-                                   "Range","%Correct","Thresh Min","Thresh Max","Points"]):
+                                   "Range","%Correct","Thresh Min","Thresh Max","Points",""]):
             col.markdown(f"**{h}**")
         st.divider()
         for i,s in enumerate(sessions):
@@ -708,7 +709,7 @@ with tab2:
             tag="good" if pct>=60 else ("warn" if pct>=40 else "alert")
             mode=s.get("mode","concentration"); sym=s.get("mode_symbol","∧")
             mode_css={"concentration":"conc","relaxation":"relax","flexibility":"flex"}.get(mode,"conc")
-            cols=st.columns([0.4,1.1,1.3,0.65,1.3,0.85,0.85,0.85,0.85,0.95,1.0,1.0,0.75])
+            cols=st.columns([0.4,1.1,1.3,0.65,1.3,0.85,0.85,0.85,0.85,0.95,1.0,1.0,0.75,0.5])
             cols[0].write(f"**#{i+1}**"); cols[1].write(s.get("date","—")); cols[2].write(s.get("duration","—").strip())
             cols[3].markdown(f'<span class="tag-{mode_css}">{sym}</span>',unsafe_allow_html=True)
             cols[4].write(str(t2.get("difficulty","—"))); cols[5].write(str(t2.get("mean","—")))
@@ -717,6 +718,9 @@ with tab2:
             cols[9].markdown(f'<span class="tag-{tag}">{pct}%</span>',unsafe_allow_html=True)
             cols[10].write(str(t2.get("threshold_min","—"))); cols[11].write(str(t2.get("threshold_max","—")))
             cols[12].write(str(t2.get("points","—")))
+            if cols[13].button("🗑️",key=f"del_{i}",help=f"Delete session #{i+1} ({s.get('date','—')})"):
+                st.session_state.patients[patient]=sessions[:i]+sessions[i+1:]
+                st.rerun()
         st.divider()
         if len(sessions)>=2:
             st.markdown("### Trend Overview")
